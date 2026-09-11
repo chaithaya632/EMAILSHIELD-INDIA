@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+venv/
+env/
+.git
+.gitignore
+data/.vault/
+*.enc
+credentials.json
+token.json
+.streamlit/secrets.toml

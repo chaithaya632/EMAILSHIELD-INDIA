@@ -1,0 +1,13 @@
+From: newsletter@example.com
+To: user@example.com
+Subject: Weekly Newsletter
+Date: Tue, 10 Sep 2026 12:00:00 +0000
+Message-ID: <12345@example.com>
+Content-Type: text/plain; charset="utf-8"
+
+Hi there,
+
+Here is your weekly update. We have some great new features.
+
+Best,
+Team

@@ -1,0 +1,15 @@
+From: security@paypal-verify-account.com
+To: victim@example.com
+Subject: URGENT: Verify Your Account
+Date: Tue, 10 Sep 2026 12:00:00 +0000
+Message-ID: <evil@attacker.com>
+Authentication-Results: spf=fail smtp.mailfrom=paypal-verify-account.com; dkim=fail
+Content-Type: text/plain; charset="utf-8"
+
+URGENT: Your account will be suspended.
+Click here to verify your login credentials immediately.
+
+Please visit http://198.51.100.23/login.php
+
+Thank you,
+Support

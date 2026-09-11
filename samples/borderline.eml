@@ -1,0 +1,16 @@
+From: marketing@offers.com
+To: user@example.com
+Subject: Final Chance!
+Date: Tue, 10 Sep 2026 12:00:00 +0000
+Message-ID: <promo@offers.com>
+Authentication-Results: spf=pass; dkim=pass
+Content-Type: text/plain; charset="utf-8"
+
+Hi,
+
+This is your final chance to claim 50% off! Immediate action required before the offer expires at midnight.
+
+Click here to view our catalog.
+
+Thanks,
+Marketing Team

@@ -1,0 +1,25 @@
+From: Rahul Sharma <rahul.sharma@enterprise.in>
+To: scan@emailshield.in
+Subject: Fwd: URGENT: Verify Your Account
+Date: Fri, 11 Sep 2026 11:15:00 +0530
+Message-ID: <forward-1001@enterprise.in>
+Content-Type: text/plain; charset="utf-8"
+
+Hi SOC Team,
+
+I received this strange email today asking me to click a link. Can you please verify if it is safe?
+
+---------- Forwarded message ---------
+From: security@paypal-verify-account.com
+Date: Tue, 10 Sep 2026 12:00:00 +0000
+Subject: URGENT: Verify Your Account
+To: victim@example.com
+Authentication-Results: spf=fail smtp.mailfrom=paypal-verify-account.com; dkim=fail
+
+URGENT: Your account will be suspended.
+Click here to verify your login credentials immediately.
+
+Please visit http://198.51.100.23/login.php
+
+Thank you,
+Support

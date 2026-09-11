@@ -1,0 +1,15 @@
+From: "CEO John Doe" <ceo.john.doe@gmail.com>
+Reply-To: attacker@evil.com
+To: finance@yourcompany.com
+Subject: URGENT: Wire Transfer Required
+Date: Tue, 10 Sep 2026 12:00:00 +0000
+Message-ID: <bec@gmail.com>
+Authentication-Results: dmarc=fail
+Content-Type: text/plain; charset="utf-8"
+
+Hi,
+
+I am in a meeting and need an urgent wire transfer to our new vendor. 
+Immediate action required. Please process $50,000 to the attached details.
+
+John

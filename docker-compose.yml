@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  emailshield:
+    build: .
+    container_name: emailshield_app
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - SESSION_SECRET_KEY=change-this-to-a-strong-random-secret-in-production
+    volumes:
+      - ./data:/app/data
