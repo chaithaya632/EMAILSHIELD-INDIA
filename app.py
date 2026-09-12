@@ -576,9 +576,22 @@ elif selected_nav == "📡 Live Mailbox Sentinel (50s Auto-Defense)":
         # WhatsApp Setup
         wa_enabled = st.checkbox("💬 Enable WhatsApp Alerts (CallMeBot API - ₹0 Free)", value=st.session_state.get("sentinel_wa_enabled", False), key="sentinel_wa_enabled")
         if wa_enabled:
+            with st.expander("⚡ How to get your Free CallMeBot API Key (30 Seconds)", expanded=True):
+                st.markdown(
+                    """
+<div style="background-color: #0f172a; border-left: 4px solid #22c55e; padding: 12px; border-radius: 6px; font-size: 0.9em; margin-bottom: 12px;">
+<b style="color: #22c55e;">Quick 3-Step Setup (100% Free Forever):</b><br>
+<b>1. Click Direct Link:</b> 👉 <a href="https://wa.me/34941872320?text=I%20allow%20callmebot%20to%20send%20me%20messages" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">Click Here to Open WhatsApp with Bot</a><br>
+<span style="color: #94a3b8; font-size: 0.85em;">(Or message <code>+34 941 87 23 20</code> on WhatsApp)</span><br><br>
+<b>2. Send Message:</b> Send this text to the bot: <code>I allow callmebot to send me messages</code><br><br>
+<b>3. Copy API Key:</b> The bot will reply within 5 seconds with: <i>"API Key generated: <b>123456</b>"</i>.<br>
+Copy that number and paste it below!
+</div>
+""",
+                    unsafe_allow_html=True
+                )
             wa_phone = st.text_input("WhatsApp Phone (+country code):", value=st.session_state.get("sentinel_wa_phone", ""), placeholder="+919876543210", key="sentinel_wa_phone")
             wa_key = st.text_input("CallMeBot API Key:", value=st.session_state.get("sentinel_wa_key", ""), type="password", placeholder="e.g. 123456", key="sentinel_wa_key")
-            st.caption("💡 **Free CallMeBot Setup (30s)**: Send `I allow callmebot to send me messages` to `+34 941 87 23 20` on WhatsApp to get your key.")
             
             if st.button("🧪 Send Test WhatsApp Alert", key="btn_test_wa"):
                 if not wa_phone or not wa_key:
