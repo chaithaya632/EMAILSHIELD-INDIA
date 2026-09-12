@@ -104,8 +104,23 @@ def detect_bec_and_impersonation(headers: Dict[str, Any], body: str, attachments
             bec_score += 15
             break
 
+    # Check if bulk newsletter
+    is_newsletter = bool(
+        headers.get("list-unsubscribe") or
+        headers.get("list-id") or
+        str(headers.get("precedence", "")).lower() == "bulk" or
+        headers.get("feedback-id")
+    )
+
     # 2. Display Name Spoofing via Free Webmail
-    if is_freemail_sender and (is_executive_lure or len(display_name.split()) >= 2):
+    # True BEC requires an executive/leadership title or department/authority keyword
+    brand_keywords = [
+        "support", "security", "billing", "helpdesk", "administrator", "service",
+        "official", "verification", "bank", "portal", "compliance", "legal", "payroll"
+    ]
+    has_dept_lure = any(re.search(rf"\b{bk}\b", display_name.lower()) for bk in brand_keywords)
+
+    if not is_newsletter and is_freemail_sender and (is_executive_lure or has_dept_lure):
         # Sending from a personal @gmail.com but display name claims to be CEO / Corporate persona
         is_display_name_spoof = True
         flags.append(f"🚨 Display-Name Spoofing: Corporate/Executive persona ('{display_name}') sending from public freemail service ('{sender_domain}')")
@@ -132,8 +147,16 @@ def detect_bec_and_impersonation(headers: Dict[str, Any], body: str, attachments
             bec_score += 20
             break
 
-    # 5. Reply-To Redirection Mismatch
-    if reply_email and sender_email and reply_email != sender_email:
+    def get_base_domain(e_str: str) -> str:
+        if "@" not in e_str:
+            return ""
+        parts = e_str.split("@")[-1].lower().split(".")
+        return ".".join(parts[-2:]) if len(parts) >= 2 else parts[0]
+
+    same_org = (get_base_domain(sender_email) == get_base_domain(reply_email)) and bool(sender_email)
+
+    # 5. Reply-To Redirection Mismatch (Flag only if cross-domain and not newsletter)
+    if reply_email and sender_email and reply_email != sender_email and not same_org and not is_newsletter:
         flags.append(f"Reply-To diversion: Replies routed away from '{sender_email}' to '{reply_email}'")
         bec_score += 25
 
@@ -157,15 +180,18 @@ def detect_bec_and_impersonation(headers: Dict[str, Any], body: str, attachments
     elif bec_score >= 50 and is_financial_lure:
         verdict = "Business Email Compromise (BEC / Wire Fraud)"
         confidence = min(int(bec_score * 0.95 + 10), 99)
-    elif bec_score >= 40 and is_executive_lure:
+    elif bec_score >= 40 and is_executive_lure and is_display_name_spoof:
         verdict = "Executive Impersonation"
         confidence = min(int(bec_score * 0.9 + 10), 95)
-    elif has_cred_lure and ("verify" in combined_text or "suspension" in combined_text or "urgent" in combined_text):
+    elif has_cred_lure and ("verify" in combined_text or "suspension" in combined_text or "urgent" in combined_text) and not is_newsletter:
         verdict = "Credential Harvesting"
         confidence = 88
-    elif bec_score >= 30:
+    elif bec_score >= 40 and is_financial_lure:
         verdict = "Suspicious Financial / Authority Solicitation"
         confidence = 72
+    elif is_newsletter:
+        verdict = "Standard / Legitimate (Newsletter / Subscription)"
+        confidence = 95
     else:
         verdict = "Standard / Legitimate"
         confidence = 85

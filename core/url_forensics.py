@@ -20,7 +20,7 @@ PHISHING_KEYWORDS = [
     "login", "signin", "log-in", "sign-in", "verify", "verification",
     "security-check", "authenticate", "password", "reset-password",
     "update-account", "banking", "secure-account", "webscr", "checkpoint",
-    "confirm", "wallet", "seedphrase", "claim-reward", "invoice-review",
+    "wallet", "seedphrase", "claim-reward", "invoice-review",
     "unlock-account", "reactivate", "account-alert", "session-expired"
 ]
 
@@ -34,6 +34,21 @@ MAJOR_BRANDS = [
     "amazon", "netflix", "chase", "wellsfargo", "bankofamerica", "sbi",
     "hdfc", "icici", "dhl", "fedex", "usps", "facebook", "instagram"
 ]
+
+VERIFIED_LEGIT_SERVICES = {
+    "youtube.com", "youtu.be", "google.com", "google.co.in", "gmail.com",
+    "substack.com", "beehiiv.com", "convertkit.com", "mailchimp.com", "medium.com",
+    "growthschool.io", "sisinty.com", "linkedin.com", "twitter.com", "x.com",
+    "instagram.com", "facebook.com", "github.com", "apple.com", "microsoft.com",
+    "whatsapp.com", "telegram.org", "zoom.us", "calendly.com", "notion.so",
+    "luma.com", "lu.ma", "hubspot.com", "stripe.com", "razorpay.com", "eventbrite.com"
+}
+
+def is_verified_service(host_str: str) -> bool:
+    if not host_str:
+        return False
+    h = host_str.lower().strip()
+    return any(h == s or h.endswith(f".{s}") for s in VERIFIED_LEGIT_SERVICES)
 
 def defang_url(url: str) -> str:
     """Converts a live URL into a defanged safe string (e.g., hxxps[://]bad[.]com)."""
@@ -160,6 +175,30 @@ def analyze_url(url: str, resolve_redirects: bool = True) -> URLAnalysisResult:
     # 7. Check for Tracking / Reconnaissance Beacons
     is_tracking_beacon = any(trk in final_path or trk in final_query for trk in ["/track", "pixel.gif", "open.php", "beacon", "stat.php"])
 
+    # Check if destination is a verified legitimate service or platform
+    is_verified_dest = is_verified_service(final_host) or is_verified_service(host)
+
+    if is_verified_dest and not detected_payload_ext:
+        # Known legitimate platform (YouTube, Substack, GrowthSchool, LinkedIn, Google, etc.)
+        threat_category = "Clean / Verified Platform Link"
+        risk_level = "LOW"
+        potential_impact = f"Directs to verified platform or creator service ('{final_host}')."
+        recommended_action = "Standard vigilance. Link is hosted on an authentic platform."
+        return URLAnalysisResult(
+            url=url,
+            defanged_url=defanged,
+            domain=host,
+            is_shortener=is_shortener,
+            final_destination=final_destination,
+            redirect_count=redirect_count,
+            threat_category=threat_category,
+            risk_level=risk_level,
+            potential_impact=potential_impact,
+            recommended_action=recommended_action,
+            reasons=reasons,
+            suspicious_indicators=suspicious_indicators
+        )
+
     # 8. Synthesize Threat Category & Impact
     if impersonated_brand and harvesting_keywords_found:
         threat_category = f"Credential Harvesting ({impersonated_brand.title()} Impersonation)"
@@ -176,14 +215,13 @@ def analyze_url(url: str, resolve_redirects: bool = True) -> URLAnalysisResult:
             f"website in a separate browser, change your password immediately, and terminate all active sessions."
         )
 
-    elif harvesting_keywords_found or (is_ip_host and harvesting_keywords_found):
+    elif (is_ip_host and harvesting_keywords_found) or (has_suspicious_tld and harvesting_keywords_found):
         threat_category = "Credential Harvesting Phishing"
         risk_level = "HIGH"
         suspicious_indicators.extend([f"Auth Lure: {kw}" for kw in harvesting_keywords_found[:3]])
-        reasons.append(f"Contains credential harvesting lures in path/query: {', '.join(harvesting_keywords_found[:3])}")
+        reasons.append(f"Contains credential harvesting lures on unverified host: {', '.join(harvesting_keywords_found[:3])}")
         potential_impact = (
-            "ACCOUNT COMPROMISE: Designed to capture user login credentials, security questions, or financial information "
-            "under the pretense of urgent verification."
+            "ACCOUNT COMPROMISE: Hosted on raw IP or high-abuse TLD designed to capture login credentials."
         )
         recommended_action = (
             "⚠️ DO NOT SUBMIT PASSWORDS. Mark the email as Phishing in your email client. Block the domain on your organization's DNS/firewall."
@@ -194,6 +232,14 @@ def analyze_url(url: str, resolve_redirects: bool = True) -> URLAnalysisResult:
         risk_level = "HIGH"
         potential_impact = "Evades standard domain reputation filters; typically indicates an unmanaged bulletproof server or temporary phishing kit."
         recommended_action = "Do NOT interact with this link. Block the destination IP address on the network edge."
+
+    elif harvesting_keywords_found:
+        # Standard domain with a login endpoint
+        threat_category = "External Authentication Endpoint"
+        risk_level = "LOW"
+        reasons.append(f"Directs to standard login or verification URL: {', '.join(harvesting_keywords_found[:2])}")
+        potential_impact = "Standard authentication portal. Ensure you intended to access this service."
+        recommended_action = "Standard vigilance when signing in."
 
     elif has_suspicious_tld:
         threat_category = "Suspicious Domain TLD"

@@ -15,6 +15,14 @@ def evaluate_rules(
     headers = parsed_email.get("headers", {})
     body = parsed_email.get("body", "").lower()
     
+    # Check if this email is a recognized newsletter or bulk mailing
+    is_newsletter = bool(
+        headers.get("list-unsubscribe") or
+        headers.get("list-id") or
+        str(headers.get("precedence", "")).lower() == "bulk" or
+        headers.get("feedback-id")
+    )
+
     # 1. Reply-To Mismatch
     from_header = headers.get("from", "")
     reply_to = headers.get("reply-to", "")
@@ -28,27 +36,82 @@ def evaluate_rules(
             return match.group(1).lower()
         return header_val.strip().lower()
 
+    def get_base_domain(email_str: str):
+        if "@" not in email_str:
+            return ""
+        dom = email_str.split("@")[-1].lower()
+        parts = dom.split(".")
+        return ".".join(parts[-2:]) if len(parts) >= 2 else dom
+
     if reply_to and from_header:
-        if extract_email(from_header) != extract_email(reply_to):
-            findings.append({
-                "rule_id": "RULE-001",
-                "finding": "Reply-To mismatch",
-                "evidence": f"From: {from_header} | Reply-To: {reply_to}",
-                "severity": "HIGH",
-                "explanation": "Reply-To address differs from the From address. Common in impersonation."
-            })
+        f_email = extract_email(from_header)
+        r_email = extract_email(reply_to)
+        
+        if f_email and r_email and f_email != r_email:
+            f_dom = get_base_domain(f_email)
+            r_dom = get_base_domain(r_email)
+            same_org = (f_dom == r_dom) and bool(f_dom)
+
+            has_bec_fraud = bec_telemetry and (
+                bec_telemetry.get("is_financial_lure") or
+                bec_telemetry.get("is_display_name_spoof") or
+                bec_telemetry.get("is_executive_lure")
+            )
+
+            # High severity ONLY when impersonating executives/finance or diverting away from legitimate brand
+            if has_bec_fraud:
+                findings.append({
+                    "rule_id": "RULE-001",
+                    "finding": "Reply-To Diversion (Financial/Executive Lure)",
+                    "evidence": f"From: {from_header} | Reply-To: {reply_to}",
+                    "severity": "HIGH",
+                    "explanation": "Reply-To address redirects replies away from apparent sender during an executive/financial lure."
+                })
+            elif not same_org and not is_newsletter:
+                findings.append({
+                    "rule_id": "RULE-001",
+                    "finding": "Reply-To address mismatch",
+                    "evidence": f"From: {from_header} | Reply-To: {reply_to}",
+                    "severity": "MEDIUM",
+                    "explanation": "Reply-To address differs from sender domain. Verify recipient before sending sensitive data."
+                })
+            elif is_newsletter or same_org:
+                # Standard practice in bulk publishing (e.g. newsletter dispatch email vs personal reply address)
+                findings.append({
+                    "rule_id": "RULE-001-INFO",
+                    "finding": "Author Reply-To configured",
+                    "evidence": f"From: {from_header} | Reply-To: {reply_to}",
+                    "severity": "LOW",
+                    "explanation": "Author or support direct reply address configured for subscriber convenience."
+                })
 
     # 2. Return-Path Mismatch
     return_path = headers.get("return-path", "")
     if return_path and from_header:
-        if extract_email(from_header) != extract_email(return_path):
-            findings.append({
-                "rule_id": "RULE-002",
-                "finding": "Return-Path mismatch",
-                "evidence": f"From: {from_header} | Return-Path: {return_path}",
-                "severity": "MEDIUM",
-                "explanation": "Return-Path differs from the From address."
-            })
+        f_email = extract_email(from_header)
+        rp_email = extract_email(return_path)
+        if f_email and rp_email and f_email != rp_email:
+            f_dom = get_base_domain(f_email)
+            rp_dom = get_base_domain(rp_email)
+            same_rp_org = (f_dom == rp_dom) and bool(f_dom)
+            auth_ok = auth_alignment and auth_alignment.get("effective_dmarc") in ["PASS", "PASS (Delegated ESP)"]
+
+            if not same_rp_org and not is_newsletter and not auth_ok:
+                findings.append({
+                    "rule_id": "RULE-002",
+                    "finding": "Return-Path mismatch",
+                    "evidence": f"From: {from_header} | Return-Path: {return_path}",
+                    "severity": "MEDIUM",
+                    "explanation": "Return-Path differs from the From address."
+                })
+            else:
+                findings.append({
+                    "rule_id": "RULE-002-INFO",
+                    "finding": "ESP Bulk Return-Path routing",
+                    "evidence": f"From: {from_header} | Return-Path: {return_path}",
+                    "severity": "LOW",
+                    "explanation": "Standard bounce handling mailbox routed via authorized email delivery provider."
+                })
 
     # 3. Urgency language
     urgency_keywords = ["urgent", "immediate action required", "account suspension", "verify your account", "overdue"]
@@ -248,4 +311,3 @@ def calculate_hybrid_risk(rule_findings: List[Dict[str, str]], ml_prob: float) -
         reasons.append("No significant malicious indicators found.")
 
     return risk_score, reasons
-

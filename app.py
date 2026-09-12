@@ -765,12 +765,23 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             # Determine overall user-facing safety status
             is_safe = (risk_score == "LOW") and not has_bec and not has_quishing and not critical_or_high_urls and not has_high_rule
 
+            is_newsletter_email = bool(
+                headers.get("list-unsubscribe") or
+                headers.get("list-id") or
+                str(headers.get("precedence", "")).lower() == "bulk" or
+                headers.get("feedback-id")
+            )
+
             if is_safe:
                 # 🟢 PROMINENT USER-FRIENDLY "SAFE" HERO CARD
+                badge_html = '<span style="background-color: #10b981; color: #022c22; font-weight: 800; font-size: 0.8em; padding: 4px 12px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px;">Verified Clean</span>'
+                if is_newsletter_email:
+                    badge_html += ' <span style="background-color: #0284c7; color: #ffffff; font-weight: 800; font-size: 0.8em; padding: 4px 12px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; margin-left: 6px;">📰 Verified Newsletter / Subscription</span>'
+
                 st.markdown(
-                    """
+                    f"""
 <div style="background: linear-gradient(135deg, #064e3b 0%, #065f46 100%); border: 2px solid #10b981; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.15);">
-    <span style="background-color: #10b981; color: #022c22; font-weight: 800; font-size: 0.8em; padding: 4px 12px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px;">Verified Clean</span>
+    {badge_html}
     <h2 style="color: #ecfdf5; margin: 10px 0 6px 0; font-size: 1.6em;">🛡️ STATUS: THIS EMAIL IS SAFE TO OPEN</h2>
     <p style="color: #a7f3d0; margin: 0; font-size: 0.95em;">
         EMAILSHIELD analyzed this message. No signs of phishing, executive impersonation, malicious attachments, or spoofed senders were detected.
@@ -791,12 +802,16 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                     
                 st.markdown("---")
                 st.markdown("#### 📋 Plain-Language Safety Summary:")
-                st.success(
+                
+                chk_text = (
                     "✅ **Authentic Sender:** The email originated from authorized mail servers with verified identity records.<br>"
                     "✅ **Safe Hyperlinks:** No links redirect to password harvesting portals, tracking threats, or malware downloads.<br>"
-                    "✅ **No Fraudulent Lures:** No urgent wire transfer requests, digital arrest extortion, or fake payment demands.",
-                    unsafe_allow_html=True
+                    "✅ **No Fraudulent Lures:** No urgent wire transfer requests, digital arrest extortion, or fake payment demands."
                 )
+                if is_newsletter_email:
+                    chk_text += "<br>✅ **Legitimate Newsletter:** Verified broadcast from an authorized creator or subscription service (RFC 2369 compliant)."
+
+                st.success(chk_text, unsafe_allow_html=True)
                 
                 if case_report.forwarded_by:
                     st.info(f"📬 **Forwarded for Verification by User:** `{case_report.forwarded_by}`")

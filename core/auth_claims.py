@@ -125,11 +125,34 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
             get_org_domain(header_from_domain) == get_org_domain(dkim_signing_domain)
         )
 
+    # Check if this email is a recognized newsletter or bulk mailing
+    is_bulk_newsletter = bool(
+        headers.get("list-unsubscribe") or
+        headers.get("list-id") or
+        str(headers.get("precedence", "")).lower() == "bulk" or
+        headers.get("feedback-id")
+    )
+
+    # Known legitimate ESP domains that send on behalf of creators / organizations
+    KNOWN_LEGIT_ESPS = {
+        "sendgrid.net", "mailgun.org", "substack.com", "convertkit.com", "beehiiv.com",
+        "mailchimp.com", "mcsv.net", "mcdlv.net", "amazonses.com", "brevo.com",
+        "hubspot.com", "hubspotemail.net", "klaviyo.com", "activehosted.com",
+        "sparkpostmail.com", "constantcontact.com", "campaignmonitor.com", "cmail1.com",
+        "cmail2.com", "acems1.com", "acems2.com", "intercom-mail.com", "mailerlite.com",
+        "postmarkapp.com", "infusionsoft.com", "dripemail2.com"
+    }
+
+    is_esp_delegated = any(
+        dkim_signing_domain.endswith(esp) or envelope_from_domain.endswith(esp)
+        for esp in KNOWN_LEGIT_ESPS
+    )
+
     # Effective DMARC Verdict
     spf_valid_for_dmarc = (spf_result == "pass" and spf_aligned)
     dkim_valid_for_dmarc = (dkim_result == "pass" and dkim_aligned)
     
-    if spf_valid_for_dmarc or dkim_valid_for_dmarc:
+    if dmarc_recorded == "pass" or spf_valid_for_dmarc or dkim_valid_for_dmarc:
         effective_dmarc = "PASS"
         dmarc_reason = "Email passed cryptographic authentication aligned with visible From domain."
         threat_detected = False
@@ -137,6 +160,11 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
         effective_dmarc = "FAIL"
         dmarc_reason = "Authentication-Results header records explicit DMARC failure."
         threat_detected = True
+    elif (spf_result == "pass" or dkim_result == "pass") and (is_bulk_newsletter or is_esp_delegated):
+        # Legitimate newsletter or creator update sent via authorized third-party ESP
+        effective_dmarc = "PASS (Delegated ESP)"
+        dmarc_reason = f"Authorized bulk email/newsletter delivery via Email Service Provider ('{dkim_signing_domain or envelope_from_domain}')."
+        threat_detected = False
     elif (spf_result == "pass" or dkim_result == "pass") and not (spf_aligned or dkim_aligned):
         effective_dmarc = "FAIL (Alignment Bypass)"
         dmarc_reason = (
