@@ -26,7 +26,16 @@ from core.domain_reputation import get_domain_reputation
 from core.relay_tracer import build_relay_flight_map, analyze_relay_transit
 from core.ai_reasoning import generate_forensic_reasoning
 from core.agent import AutonomousForensicAgent
-from core.session_vault import load_session_credentials, save_session_credentials, clear_session_credentials
+from core.session_vault import (
+    load_session_credentials,
+    save_session_credentials,
+    save_account_credentials,
+    list_saved_accounts,
+    get_account_credentials,
+    switch_active_account,
+    forget_account,
+    clear_session_credentials
+)
 import plotly.express as px
 
 st.set_page_config(page_title="EMAILSHIELD INDIA", layout="wide")
@@ -41,7 +50,7 @@ forensic_agent = AutonomousForensicAgent(ml_classifier)
 
 # Automatically restore saved 14-day hardware-bound encrypted session vault
 if "mailbox_connected" not in st.session_state:
-    saved_session = load_session_credentials()
+    saved_session = get_account_credentials()
     if saved_session:
         st.session_state["mailbox_connected"] = True
         st.session_state["mailbox_type"] = "IMAP"
@@ -60,12 +69,67 @@ st.sidebar.header("📬 Connect Mailbox")
 st.sidebar.write("Inspect live inboxes directly without cloud console setup.")
 
 if not st.session_state.get("mailbox_connected", False):
-    provider_name = st.sidebar.selectbox("Email Service:", ["Gmail", "Outlook / Office 365", "Yahoo Mail", "Zoho Mail", "Custom / Corporate"])
+    saved_accounts = list_saved_accounts()
+    show_new_account_form = True
     
-    # Dynamic 30-Second Setup Guide with direct links
-    if provider_name == "Gmail":
-        st.sidebar.markdown(
-            """
+    if saved_accounts:
+        st.sidebar.markdown("### 🔒 Saved Mailboxes")
+        st.sidebar.caption("Hardware-bound AES-256 encrypted vault (14-day TTL)")
+        
+        acc_labels = [f"📧 {a['email']} ({a['provider']})" for a in saved_accounts]
+        acc_labels.append("➕ Connect New Account")
+        
+        sel_idx = len(acc_labels) - 1 if st.session_state.get("add_new_account_mode", False) else 0
+        selected_option = st.sidebar.radio("Select Account:", acc_labels, index=sel_idx, key="saved_acc_radio")
+        
+        if selected_option != "➕ Connect New Account":
+            show_new_account_form = False
+            chosen_idx = acc_labels.index(selected_option)
+            chosen_acc = saved_accounts[chosen_idx]
+            
+            st.sidebar.markdown(
+                f"""
+<div style="background-color: #0f172a; border-left: 4px solid #10b981; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
+<b>Provider:</b> {chosen_acc['provider']}<br>
+<b>Host:</b> <code>{chosen_acc['host']}</code><br>
+<b>Vault Status:</b> 🔒 Active ({chosen_acc['days_remaining']} days left)
+</div>
+""",
+                unsafe_allow_html=True
+            )
+            
+            col_act1, col_act2 = st.sidebar.columns([3, 2])
+            with col_act1:
+                if col_act1.button("🚀 Connect Inbox", type="primary", key="btn_connect_saved"):
+                    creds = switch_active_account(chosen_acc["email"])
+                    if creds:
+                        st.session_state["mailbox_connected"] = True
+                        st.session_state["mailbox_type"] = "IMAP"
+                        st.session_state["mailbox_creds"] = {
+                            "email": creds["email"], "pwd": creds["pwd"], "host": creds["host"], "provider": creds.get("provider", "Gmail")
+                        }
+                        st.session_state["session_days_left"] = creds.get("days_remaining", 14)
+                        st.session_state.pop("recent_emails", None)
+                        st.session_state["add_new_account_mode"] = False
+                        st.rerun()
+            with col_act2:
+                if col_act2.button("🗑️ Forget", key="btn_forget_saved", help="Shred credentials for this account"):
+                    forget_account(chosen_acc["email"])
+                    st.rerun()
+        else:
+            show_new_account_form = True
+
+    if show_new_account_form:
+        if saved_accounts:
+            st.sidebar.markdown("---")
+            st.sidebar.markdown("#### ➕ Connect Another Mailbox")
+            
+        provider_name = st.sidebar.selectbox("Email Service:", ["Gmail", "Outlook / Office 365", "Yahoo Mail", "Zoho Mail", "Custom / Corporate"])
+        
+        # Dynamic 30-Second Setup Guide with direct links
+        if provider_name == "Gmail":
+            st.sidebar.markdown(
+                """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
 <b>⚡ Quick 30s Setup for Gmail:</b><br>
 1️⃣ <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">👉 Click here to open Google App Passwords ↗</a><br>
@@ -75,11 +139,11 @@ if not st.session_state.get("mailbox_connected", False):
 <span style="color: #94a3b8; font-size: 0.9em;">🔒 <b>100% Free &amp; Safe:</b> Requires 2-Step Verification ON. Your real password is never entered or shared.</span>
 </div>
 """,
-            unsafe_allow_html=True
-        )
-    elif provider_name == "Outlook / Office 365":
-        st.sidebar.markdown(
-            """
+                unsafe_allow_html=True
+            )
+        elif provider_name == "Outlook / Office 365":
+            st.sidebar.markdown(
+                """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
 <b>⚡ Quick 30s Setup for Outlook / Hotmail:</b><br>
 1️⃣ <a href="https://account.live.com/proofs/manage/additional" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">👉 Click here to open Microsoft Security ↗</a><br>
@@ -89,11 +153,11 @@ if not st.session_state.get("mailbox_connected", False):
 <span style="color: #94a3b8; font-size: 0.9em;">🔒 <b>100% Free ($0):</b> Revocable anytime from your Microsoft account.</span>
 </div>
 """,
-            unsafe_allow_html=True
-        )
-    elif provider_name == "Yahoo Mail":
-        st.sidebar.markdown(
-            """
+                unsafe_allow_html=True
+            )
+        elif provider_name == "Yahoo Mail":
+            st.sidebar.markdown(
+                """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
 <b>⚡ Quick 30s Setup for Yahoo Mail:</b><br>
 1️⃣ <a href="https://login.yahoo.com/account/security" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">👉 Click here to open Yahoo Security ↗</a><br>
@@ -103,11 +167,11 @@ if not st.session_state.get("mailbox_connected", False):
 <span style="color: #94a3b8; font-size: 0.9em;">🔒 <b>100% Free ($0):</b> Works with any free Yahoo account.</span>
 </div>
 """,
-            unsafe_allow_html=True
-        )
-    elif provider_name == "Zoho Mail":
-        st.sidebar.markdown(
-            """
+                unsafe_allow_html=True
+            )
+        elif provider_name == "Zoho Mail":
+            st.sidebar.markdown(
+                """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
 <b>⚡ Quick 30s Setup for Zoho Mail:</b><br>
 1️⃣ <a href="https://accounts.zoho.com/home#security/app_password" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">👉 Click here to open Zoho Security ↗</a><br>
@@ -117,64 +181,64 @@ if not st.session_state.get("mailbox_connected", False):
 <span style="color: #94a3b8; font-size: 0.9em;">🔒 <b>100% Free ($0):</b> Supports personal (@zoho.com / @zoho.in) and corporate/custom domain Zoho accounts.</span>
 </div>
 """,
-            unsafe_allow_html=True
-        )
-    else:
-        st.sidebar.markdown(
-            """
+                unsafe_allow_html=True
+            )
+        else:
+            st.sidebar.markdown(
+                """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
 <b>🏢 Corporate / Custom IMAP Setup:</b><br>
 Enter your organization's IMAP host address (e.g., <code>mail.company.com</code>) and your email credentials. Port 993 SSL is standard.
 </div>
 """,
-            unsafe_allow_html=True
-        )
+                unsafe_allow_html=True
+            )
 
-    u_email = st.sidebar.text_input("Email:", placeholder="user@zoho.com" if provider_name == "Zoho Mail" else "user@gmail.com")
-    u_pass = st.sidebar.text_input("App Password:", type="password", help="16-character code created above. Spaces are automatically removed.")
-    
-    with st.sidebar.expander("❓ What is an App Password? Is it safe & free?"):
-        st.markdown(
-            "• **Cost**: **100% Free ($0 / ₹0)** forever. No subscriptions or credit cards.<br>"
-            "• **Security**: Your real account password is **never shared**. An App Password only grants limited email read access.<br>"
-            "• **Control**: You can revoke or delete the App Password from Google/Microsoft/Zoho with one click anytime.<br>"
-            "• **No Developer Accounts**: No Google Cloud Console, no Azure registration, zero technical setup.",
-            unsafe_allow_html=True
+        u_email = st.sidebar.text_input("Email:", placeholder="user@zoho.com" if provider_name == "Zoho Mail" else "user@gmail.com")
+        u_pass = st.sidebar.text_input("App Password:", type="password", help="16-character code created above. Spaces are automatically removed.")
+        
+        with st.sidebar.expander("❓ What is an App Password? Is it safe & free?"):
+            st.markdown(
+                "• **Cost**: **100% Free ($0 / ₹0)** forever. No subscriptions or credit cards.<br>"
+                "• **Security**: Your real account password is **never shared**. An App Password only grants limited email read access.<br>"
+                "• **Control**: You can revoke or delete the App Password from Google/Microsoft/Zoho with one click anytime.<br>"
+                "• **No Developer Accounts**: No Google Cloud Console, no Azure registration, zero technical setup.",
+                unsafe_allow_html=True
+            )
+            
+        c_host = ""
+        if provider_name == "Custom / Corporate":
+            c_host = st.sidebar.text_input("IMAP Host:", placeholder="imap.yourserver.com")
+            
+        remember_me = st.sidebar.checkbox(
+            "🔒 Remember this account for 2 weeks",
+            value=True,
+            help="Encrypted with hardware-bound AES-256 (600,000 PBKDF2 rounds). Automatically expires and shreds after 14 days."
         )
-        
-    c_host = ""
-    if provider_name == "Custom / Corporate":
-        c_host = st.sidebar.text_input("IMAP Host:", placeholder="imap.yourserver.com")
-        
-    remember_me = st.sidebar.checkbox(
-        "🔒 Keep me logged in for 2 weeks",
-        value=True,
-        help="Encrypted with hardware-bound AES-256 (600,000 PBKDF2 rounds). Automatically expires and shreds after 14 days."
-    )
-        
-    if st.sidebar.button("Connect Mailbox", type="primary"):
-        if u_email and u_pass:
-            target_host = c_host if provider_name == "Custom / Corporate" else get_provider_host(provider_name, u_email)
-            with st.spinner("Authenticating with mail server..."):
-                ok, conn_msg = test_imap_connection(u_email, u_pass, target_host)
-            if ok:
-                if remember_me:
-                    save_session_credentials(u_email, u_pass, target_host, provider_name, days=14)
-                    st.session_state["session_days_left"] = 14
+            
+        if st.sidebar.button("Connect Mailbox", type="primary"):
+            if u_email and u_pass:
+                target_host = c_host if provider_name == "Custom / Corporate" else get_provider_host(provider_name, u_email)
+                with st.spinner("Authenticating with mail server..."):
+                    ok, conn_msg = test_imap_connection(u_email, u_pass, target_host)
+                if ok:
+                    if remember_me:
+                        save_account_credentials(u_email, u_pass, target_host, provider_name, days=14)
+                        st.session_state["session_days_left"] = 14
+                    else:
+                        st.session_state.pop("session_days_left", None)
+                    st.session_state["mailbox_connected"] = True
+                    st.session_state["mailbox_type"] = "IMAP"
+                    st.session_state["mailbox_creds"] = {
+                        "email": u_email, "pwd": u_pass, "host": target_host, "provider": provider_name
+                    }
+                    st.session_state.pop("recent_emails", None)
+                    st.session_state["add_new_account_mode"] = False
+                    st.rerun()
                 else:
-                    clear_session_credentials()
-                    st.session_state.pop("session_days_left", None)
-                st.session_state["mailbox_connected"] = True
-                st.session_state["mailbox_type"] = "IMAP"
-                st.session_state["mailbox_creds"] = {
-                    "email": u_email, "pwd": u_pass, "host": target_host, "provider": provider_name
-                }
-                st.session_state.pop("recent_emails", None)
-                st.rerun()
+                    st.sidebar.error(conn_msg)
             else:
-                st.sidebar.error(conn_msg)
-        else:
-            st.sidebar.warning("Please enter your email and app password.")
+                st.sidebar.warning("Please enter your email and app password.")
 
 if st.session_state.get("mailbox_connected", False):
     m_type = st.session_state.get("mailbox_type", "IMAP")
@@ -188,13 +252,58 @@ if st.session_state.get("mailbox_connected", False):
             days_left = st.session_state["session_days_left"]
             st.sidebar.caption(f"🔒 Encrypted Vault: **{days_left}d remaining**")
     with col_mb2:
-        if st.sidebar.button("Disconnect"):
-            clear_session_credentials()
+        if st.sidebar.button("Disconnect", help="Log out of current view (account stays in saved vault)"):
             st.session_state["mailbox_connected"] = False
             st.session_state.pop("recent_emails", None)
             st.session_state.pop("mailbox_creds", None)
             st.session_state.pop("session_days_left", None)
             st.rerun()
+
+    # Multi-Account Fast Switcher in Sidebar
+    all_saved = list_saved_accounts()
+    other_accounts = [a for a in all_saved if a["email"] != creds.get("email")]
+    
+    if other_accounts or len(all_saved) > 1:
+        with st.sidebar.expander("🔄 Switch Mailbox Account", expanded=False):
+            if other_accounts:
+                switch_opts = [f"{a['email']} ({a['provider']} - {a['days_remaining']}d left)" for a in other_accounts]
+                target_choice = st.selectbox("Switch to saved inbox:", switch_opts, key="sw_account_select")
+                
+                col_sw1, col_sw2 = st.columns([3, 2])
+                with col_sw1:
+                    if col_sw1.button("🚀 Switch", key="btn_do_switch"):
+                        target_email = target_choice.split(" ")[0]
+                        new_creds = switch_active_account(target_email)
+                        if new_creds:
+                            st.session_state["mailbox_connected"] = True
+                            st.session_state["mailbox_type"] = "IMAP"
+                            st.session_state["mailbox_creds"] = {
+                                "email": new_creds["email"], "pwd": new_creds["pwd"], "host": new_creds["host"], "provider": new_creds.get("provider", "Gmail")
+                            }
+                            st.session_state["session_days_left"] = new_creds.get("days_remaining", 14)
+                            st.session_state.pop("recent_emails", None)
+                            st.rerun()
+                with col_sw2:
+                    if col_sw2.button("🗑️ Forget", key="btn_forget_current", help="Shred this account from vault"):
+                        forget_account(disp_email)
+                        st.session_state["mailbox_connected"] = False
+                        st.session_state.pop("recent_emails", None)
+                        st.session_state.pop("mailbox_creds", None)
+                        st.session_state.pop("session_days_left", None)
+                        st.rerun()
+            else:
+                if st.button("🗑️ Forget This Account", key="btn_forget_only", help="Shred credentials from vault"):
+                    forget_account(disp_email)
+                    st.session_state["mailbox_connected"] = False
+                    st.session_state.pop("recent_emails", None)
+                    st.session_state.pop("mailbox_creds", None)
+                    st.session_state.pop("session_days_left", None)
+                    st.rerun()
+                    
+            if st.button("➕ Connect Another Account", key="btn_add_another_connected"):
+                st.session_state["mailbox_connected"] = False
+                st.session_state["add_new_account_mode"] = True
+                st.rerun()
 
     try:
         # Mailbox Scope & Quantity Controls
