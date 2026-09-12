@@ -345,3 +345,37 @@ def save_session_credentials(email: str, pwd: str, host: str, provider: str, day
 
 def load_session_credentials() -> Optional[Dict[str, Any]]:
     return get_account_credentials(None)
+
+
+def save_account_alert_config(email: str, alert_config: Dict[str, Any]) -> bool:
+    """
+    Persists alert preferences (Telegram Bot Token/Chat ID, WhatsApp config)
+    bound to the specified email account in the AES-256 encrypted vault.
+    """
+    payload = _read_raw_vault()
+    if not payload or "accounts" not in payload:
+        return False
+        
+    target_email = email.strip().lower() if email else payload.get("active_account", "")
+    matched_key = None
+    for em in payload.get("accounts", {}):
+        if em.strip().lower() == target_email:
+            matched_key = em
+            break
+            
+    if not matched_key:
+        return False
+        
+    payload["accounts"][matched_key]["alert_config"] = alert_config
+    return _write_raw_vault(payload)
+
+
+def get_account_alert_config(email: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Retrieves saved alert preferences for the specified account or active account.
+    """
+    creds = get_account_credentials(email)
+    if creds and "alert_config" in creds:
+        return creds["alert_config"]
+    return {}
+

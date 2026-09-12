@@ -20,12 +20,14 @@ from core.attachments import analyze_all_attachments
 from core.relay_tracer import analyze_relay_transit
 from core.ai_reasoning import generate_forensic_reasoning
 from core.case_store import save_case
-from core.schemas import (
-    CaseReport, Indicator, GeolocationInfo, AuthEvidence,
-    RuleFinding, MLAssessment, EventTimeline
-)
+from core.schemas import RuleFinding
 from core.mailbox_connector import fetch_imap_emails, fetch_imap_raw_email
-from core.gmail_integration import fetch_recent_emails, fetch_raw_email
+
+try:
+    from core.gmail_integration import fetch_recent_emails, fetch_raw_email
+except Exception:
+    def fetch_recent_emails(*args, **kwargs): return []
+    def fetch_raw_email(*args, **kwargs): return b""
 
 # =====================================================================
 # 1. PRIVACY REDACTION & SENSITIVE TOKEN MASKING

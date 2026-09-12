@@ -34,7 +34,9 @@ from core.session_vault import (
     get_account_credentials,
     switch_active_account,
     forget_account,
-    clear_session_credentials
+    clear_session_credentials,
+    save_account_alert_config,
+    get_account_alert_config
 )
 from core.indian_banking import extract_indian_financial_indicators
 from core.quishing import scan_for_quishing
@@ -42,7 +44,16 @@ from core.eml_sanitizer import sanitize_eml_content
 from core.header_diff import compare_headers_against_baseline, BRAND_BASELINES
 from core.ncrp_packager import generate_ncrp_complaint_text, generate_ncrp_pdf_annexure
 import plotly.express as px
-from core.sentinel import sentinel_manager, send_test_alert, mask_sensitive_subject
+import sys
+import importlib
+
+# Resilient Sentinel import with live cache reload protection for Streamlit Cloud
+try:
+    from core.sentinel import sentinel_manager, send_test_alert, mask_sensitive_subject
+except ImportError:
+    if "core.sentinel" in sys.modules:
+        importlib.reload(sys.modules["core.sentinel"])
+    from core.sentinel import sentinel_manager, send_test_alert, mask_sensitive_subject
 
 st.set_page_config(page_title="EMAILSHIELD INDIA", layout="wide")
 
@@ -67,6 +78,22 @@ if "mailbox_connected" not in st.session_state:
             "provider": saved_session.get("provider", "Gmail")
         }
         st.session_state["session_days_left"] = saved_session.get("days_remaining", 14)
+        
+        # Automatically restore saved bot alert settings from encrypted vault
+        saved_alerts = saved_session.get("alert_config", {})
+        if saved_alerts:
+            if "whatsapp_enabled" in saved_alerts:
+                st.session_state["sentinel_wa_enabled"] = saved_alerts.get("whatsapp_enabled", False)
+            if "whatsapp_phone" in saved_alerts:
+                st.session_state["sentinel_wa_phone"] = saved_alerts.get("whatsapp_phone", "")
+            if "whatsapp_apikey" in saved_alerts:
+                st.session_state["sentinel_wa_key"] = saved_alerts.get("whatsapp_apikey", "")
+            if "telegram_enabled" in saved_alerts:
+                st.session_state["sentinel_tg_enabled"] = saved_alerts.get("telegram_enabled", False)
+            if "telegram_token" in saved_alerts:
+                st.session_state["sentinel_tg_token"] = saved_alerts.get("telegram_token", "")
+            if "telegram_chat_id" in saved_alerts:
+                st.session_state["sentinel_tg_cid"] = saved_alerts.get("telegram_chat_id", "")
 
 st.title("🛡️ EMAILSHIELD INDIA")
 st.subheader("AI-Powered Email Threat Detection, Geolocation & Forensic Intelligence Platform")
@@ -115,6 +142,14 @@ if not st.session_state.get("mailbox_connected", False):
                             "email": creds["email"], "pwd": creds["pwd"], "host": creds["host"], "provider": creds.get("provider", "Gmail")
                         }
                         st.session_state["session_days_left"] = creds.get("days_remaining", 14)
+                        saved_alerts = creds.get("alert_config", {})
+                        if saved_alerts:
+                            st.session_state["sentinel_wa_enabled"] = saved_alerts.get("whatsapp_enabled", False)
+                            st.session_state["sentinel_wa_phone"] = saved_alerts.get("whatsapp_phone", "")
+                            st.session_state["sentinel_wa_key"] = saved_alerts.get("whatsapp_apikey", "")
+                            st.session_state["sentinel_tg_enabled"] = saved_alerts.get("telegram_enabled", False)
+                            st.session_state["sentinel_tg_token"] = saved_alerts.get("telegram_token", "")
+                            st.session_state["sentinel_tg_cid"] = saved_alerts.get("telegram_chat_id", "")
                         st.session_state.pop("recent_emails", None)
                         st.session_state["add_new_account_mode"] = False
                         st.rerun()
@@ -548,6 +583,8 @@ elif selected_nav == "📡 Live Mailbox Sentinel (50s Auto-Defense)":
                             "telegram_token": st.session_state.get("sentinel_tg_token", ""),
                             "telegram_chat_id": st.session_state.get("sentinel_tg_cid", "")
                         }
+                        if creds.get("email"):
+                            save_account_alert_config(creds["email"], alert_cfg)
                         ok, msg = sentinel_manager.start(
                             mailbox_type=m_type,
                             mailbox_creds=creds,
@@ -602,6 +639,16 @@ Copy that number and paste it below!<br><br>
                         t_ok, t_msg = send_test_alert("whatsapp", {"whatsapp_phone": wa_phone, "whatsapp_apikey": wa_key})
                     if t_ok:
                         st.success("✅ WhatsApp test message delivered! Check your phone.")
+                        if creds.get("email"):
+                            save_account_alert_config(creds["email"], {
+                                "whatsapp_enabled": True,
+                                "whatsapp_phone": wa_phone,
+                                "whatsapp_apikey": wa_key,
+                                "telegram_enabled": st.session_state.get("sentinel_tg_enabled", False),
+                                "telegram_token": st.session_state.get("sentinel_tg_token", ""),
+                                "telegram_chat_id": st.session_state.get("sentinel_tg_cid", "")
+                            })
+                            st.caption("🔒 Alert credentials saved to your encrypted account vault.")
                     else:
                         st.error(f"Dispatch failed: {t_msg}")
 
@@ -637,6 +684,16 @@ Copy that number and paste it below!<br><br>
                         t_ok, t_msg = send_test_alert("telegram", {"telegram_token": tg_token, "telegram_chat_id": tg_cid})
                     if t_ok:
                         st.success("✅ Telegram test message delivered! Check your phone.")
+                        if creds.get("email"):
+                            save_account_alert_config(creds["email"], {
+                                "whatsapp_enabled": st.session_state.get("sentinel_wa_enabled", False),
+                                "whatsapp_phone": st.session_state.get("sentinel_wa_phone", ""),
+                                "whatsapp_apikey": st.session_state.get("sentinel_wa_key", ""),
+                                "telegram_enabled": True,
+                                "telegram_token": tg_token,
+                                "telegram_chat_id": tg_cid
+                            })
+                            st.caption("🔒 Alert credentials saved to your encrypted account vault.")
                     else:
                         st.error(f"Dispatch failed: {t_msg}")
 
