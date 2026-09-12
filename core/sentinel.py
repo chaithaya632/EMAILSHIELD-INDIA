@@ -113,6 +113,12 @@ def send_telegram_alert(bot_token: str, chat_id: str, text: str) -> Tuple[bool, 
         if resp.status_code == 200 and data.get("ok"):
             return True, "Telegram alert successfully delivered."
         err_desc = data.get("description", resp.text[:100])
+        if "chat not found" in err_desc.lower():
+            return False, (
+                "Telegram error: 'Chat not found'.\n"
+                "👉 Fix: Open your bot in Telegram and click 'START' (bots cannot message you until you press Start).\n"
+                "👉 Also ensure Chat ID is your numeric ID (from @userinfobot), not your @username."
+            )
         return False, f"Telegram error: {err_desc}"
     except Exception as e:
         return False, f"Telegram dispatch failed: {str(e)}"
