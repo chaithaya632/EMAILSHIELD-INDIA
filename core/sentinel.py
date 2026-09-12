@@ -28,13 +28,52 @@ from core.mailbox_connector import fetch_imap_emails, fetch_imap_raw_email
 from core.gmail_integration import fetch_recent_emails, fetch_raw_email
 
 # =====================================================================
-# 1. MOBILE ALERT DISPATCHERS (WhatsApp & Telegram)
+# 1. PRIVACY REDACTION & SENSITIVE TOKEN MASKING
+# =====================================================================
+
+def mask_sensitive_subject(subject: str) -> str:
+    """
+    Redacts OTPs, 2FA codes, PINs, and authentication tokens from email subjects
+    to guarantee user security and privacy on dashboards and alerts.
+    """
+    if not subject:
+        return "No Subject"
+
+    # Full numeric subject (e.g. "44830")
+    if re.fullmatch(r'\s*[0-9]{4,8}\s*', subject):
+        return "•••••• (Security Code)"
+
+    # Pattern 1: Keywords like "code", "otp", "pin" followed by 4-8 digits
+    # e.g., "Your Code - 44830", "OTP: 123456", "verification code 981245"
+    masked = re.sub(
+        r'(?i)\b(code|otp|pin|passcode|token|verification|verify|secret|security code|one[- ]time password)\b(\s*[:\-\=\s#]*\s*)([0-9]{4,8}|[0-9]{3}[-\s][0-9]{3})\b',
+        r'\1\2••••••',
+        subject
+    )
+
+    # Pattern 2: 4-8 digits followed by "is your code / otp / verification"
+    # e.g., "44830 is your Telegram code"
+    masked = re.sub(
+        r'(?i)\b([0-9]{4,8})\b(\s+(?:is your|is the|to verify|verification|code|otp))',
+        r'••••••\2',
+        masked
+    )
+
+    # Pattern 3: Standalone numbers in security/auth subjects (like "Telegram", "Google", "Code", "OTP")
+    auth_words = ["telegram", "google", "code", "otp", "pin", "verify", "verification", "login", "password", "security", "auth"]
+    if any(w in masked.lower() for w in auth_words):
+        masked = re.sub(r'\b[0-9]{4,8}\b', '••••••', masked)
+
+    return masked
+
+# =====================================================================
+# 2. MOBILE ALERT DISPATCHERS (WhatsApp & Telegram)
 # =====================================================================
 
 def format_threat_alert_text(threat_info: Dict[str, Any]) -> str:
     """Formats an urgent, clean security warning with markdown/emojis."""
     risk = threat_info.get("risk_score", "HIGH")
-    subject = threat_info.get("subject", "No Subject")
+    subject = mask_sensitive_subject(threat_info.get("subject", "No Subject"))
     sender = threat_info.get("sender", "Unknown Sender")
     score = threat_info.get("risk_score_numeric", 85)
     reasons = threat_info.get("risk_reasons", [])
@@ -247,7 +286,7 @@ class SentinelManager:
                 if latest_emails:
                     top_msg = latest_emails[0]
                     self.state.checkpoint_id = str(top_msg.get("id"))
-                    self.state.checkpoint_subject = top_msg.get("subject", "No Subject")
+                    self.state.checkpoint_subject = mask_sensitive_subject(top_msg.get("subject", "No Subject"))
                     self.state.checkpoint_sender = top_msg.get("sender", "Unknown")
                     self.state.checkpoint_date = top_msg.get("date", "Unknown")
                     self.state.status_message = f"Synchronized at: {self.state.checkpoint_subject[:35]}..."
@@ -347,7 +386,7 @@ class SentinelManager:
             # If no checkpoint was established, establish it at the latest email
             if fetched_list:
                 self.state.checkpoint_id = str(fetched_list[0].get("id"))
-                self.state.checkpoint_subject = fetched_list[0].get("subject", "No Subject")
+                self.state.checkpoint_subject = mask_sensitive_subject(fetched_list[0].get("subject", "No Subject"))
             return []
 
         # Check if the top email is identical to our checkpoint
@@ -481,9 +520,9 @@ class SentinelManager:
             else:
                 self.state.clean_count += 1
 
-            # Advance checkpoint to this email!
+            # Advance checkpoint to this email (with sensitive tokens/OTPs redacted)!
             self.state.checkpoint_id = msg_id
-            self.state.checkpoint_subject = subject
+            self.state.checkpoint_subject = mask_sensitive_subject(subject)
             self.state.checkpoint_sender = sender
             self.state.checkpoint_date = str(msg_item.get("date", datetime.datetime.now().strftime("%Y-%m-%d %H:%M")))
 
@@ -496,7 +535,7 @@ class SentinelManager:
             case_id = f"CASE-{uuid.uuid4().hex[:8].upper()}"
             threat_payload = {
                 "case_id": case_id,
-                "subject": subject,
+                "subject": mask_sensitive_subject(subject),
                 "sender": sender,
                 "risk_score": risk_score,
                 "risk_score_numeric": score_val,
@@ -532,10 +571,10 @@ class SentinelManager:
                 with self._lock:
                     self.state.alerts_sent += 1
 
-        # Record into recent activity feed
+        # Record into recent activity feed (with sensitive tokens masked)
         activity_entry = {
             "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
-            "subject": subject,
+            "subject": mask_sensitive_subject(subject),
             "sender": sender,
             "verdict": risk_score,
             "score": score_val,

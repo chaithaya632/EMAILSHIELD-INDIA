@@ -332,9 +332,24 @@ manager.state.checkpoint_subject = "Brand New Inbound Attack"
 
 # Test identical checkpoint (No new emails arrived)
 unseen_after = manager._identify_unseen_emails(mock_inbox)
-print(f"Subsequent check with checkpoint 105: {len(unseen_after)} new emails (Zero duplicates)")
 assert len(unseen_after) == 0
 
+# 3. Test Sensitive Token / OTP Redaction
+from core.sentinel import mask_sensitive_subject
+masked_sample1 = mask_sensitive_subject("Your Code - 44830")
+masked_sample2 = mask_sensitive_subject("Telegram: 123456 is your login code")
+masked_sample3 = mask_sensitive_subject("HDFC Bank: OTP 891245 for your transaction")
+masked_sample4 = mask_sensitive_subject("Weekend plans?")
+print(f"OTP Redaction Preview 1: 'Your Code - 44830' -> '{masked_sample1}'")
+print(f"OTP Redaction Preview 2: 'Telegram: 123456...' -> '{masked_sample2}'")
+
+assert "44830" not in masked_sample1
+assert "••••••" in masked_sample1
+assert "123456" not in masked_sample2
+assert "891245" not in masked_sample3
+assert masked_sample4 == "Weekend plans?"
+
 print("\n>>> ALL 15 FORENSIC & SENTINEL TESTS COMPLETED AND PASSED 100%! <<<")
+
 
 

@@ -42,7 +42,7 @@ from core.eml_sanitizer import sanitize_eml_content
 from core.header_diff import compare_headers_against_baseline, BRAND_BASELINES
 from core.ncrp_packager import generate_ncrp_complaint_text, generate_ncrp_pdf_annexure
 import plotly.express as px
-from core.sentinel import sentinel_manager, send_test_alert
+from core.sentinel import sentinel_manager, send_test_alert, mask_sensitive_subject
 
 st.set_page_config(page_title="EMAILSHIELD INDIA", layout="wide")
 
@@ -397,7 +397,7 @@ if st.session_state.get("mailbox_connected", False):
                 
             if filtered_list:
                 email_opts = {
-                    msg['id']: f"{msg.get('date', '')[:16]} | {msg.get('sender', '')[:20]} | {msg.get('subject', '')[:30]}"
+                    msg['id']: f"{msg.get('date', '')[:16]} | {msg.get('sender', '')[:20]} | {mask_sensitive_subject(msg.get('subject', ''))[:30]}"
                     for msg in filtered_list
                 }
                 selected_msg_id = st.sidebar.selectbox(
@@ -526,7 +526,7 @@ elif selected_nav == "📡 Live Mailbox Sentinel (50s Auto-Defense)":
                 f"""
 <div style="background-color: #1e293b; border-left: 4px solid #38bdf8; padding: 12px; border-radius: 6px; margin-bottom: 15px;">
 <div style="font-size: 0.8em; color: #94a3b8; font-weight: 600; text-transform: uppercase;">Last Analyzed Checkpoint</div>
-<div style="font-size: 1.05em; font-weight: 700; color: #f8fafc; margin-top: 4px;">{state_dict['checkpoint_subject'][:50]}</div>
+<div style="font-size: 1.05em; font-weight: 700; color: #f8fafc; margin-top: 4px;">{mask_sensitive_subject(state_dict['checkpoint_subject'])[:50]}</div>
 <div style="font-size: 0.85em; color: #cbd5e1; margin-top: 4px;"><b>Sender:</b> {state_dict['checkpoint_sender'][:40]}</div>
 <div style="font-size: 0.8em; color: #64748b; margin-top: 4px;"><b>Time:</b> {state_dict['checkpoint_date']} | <b>Last Check:</b> {state_dict['last_checked_time']}</div>
 </div>
@@ -665,7 +665,7 @@ Copy that number and paste it below!<br><br>
                 "Verdict": v_badge,
                 "Threat Score": f"{a['score']}/100",
                 "Sender": a["sender"][:30],
-                "Subject": a["subject"][:40],
+                "Subject": mask_sensitive_subject(a["subject"])[:40],
                 "Mobile Alert": alert_str
             })
         st.dataframe(formatted_table, use_container_width=True)
