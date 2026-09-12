@@ -576,14 +576,17 @@ elif selected_nav == "📡 Live Mailbox Sentinel (50s Auto-Defense)":
         # WhatsApp Setup
         wa_enabled = st.checkbox("💬 Enable WhatsApp Alerts (CallMeBot API - ₹0 Free)", value=st.session_state.get("sentinel_wa_enabled", False), key="sentinel_wa_enabled")
         if wa_enabled:
-            with st.expander("⚡ CallMeBot WhatsApp Setup & Gateway Status", expanded=True):
+            with st.expander("⚡ How to get CallMeBot API Key & WhatsApp Bot Links", expanded=True):
                 st.markdown(
                     """
-<div style="background-color: #0f172a; border-left: 4px solid #f59e0b; padding: 12px; border-radius: 6px; font-size: 0.9em; margin-bottom: 12px;">
-<b style="color: #f59e0b;">⚠️ Notice on CallMeBot WhatsApp Gateway:</b><br>
-CallMeBot operates unofficial WhatsApp numbers that Meta (WhatsApp) periodically rotates or restricts due to capacity. According to CallMeBot's website, their WhatsApp gateway periodically reports <i>"The bot is currently full / slots unavailable"</i>.<br><br>
-<b>If you already have a CallMeBot API key:</b> Enter your phone and key below.<br>
-<b>For 100% reliable, instant alerts right now:</b> Use the <b>Telegram Bot</b> option below (takes 30 seconds, official API, 100% free, never full).
+<div style="background-color: #0f172a; border-left: 4px solid #22c55e; padding: 12px; border-radius: 6px; font-size: 0.9em; margin-bottom: 12px;">
+<b style="color: #22c55e;">📱 WhatsApp Bot Setup Steps:</b><br>
+<b>1. Direct WhatsApp Link:</b> 👉 <a href="https://wa.me/34941872320?text=I%20allow%20callmebot%20to%20send%20me%20messages" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">Click Here to Open WhatsApp with CallMeBot</a><br>
+<span style="color: #94a3b8; font-size: 0.85em;">(Phone: <code>+34 941 87 23 20</code> | Also check <a href="https://www.callmebot.com/blog/free-api-whatsapp-messages/" target="_blank" style="color: #38bdf8;">CallMeBot Official Site</a> for newly rotated live numbers)</span><br><br>
+<b>2. Send Message:</b> Send this text to the bot: <code>I allow callmebot to send me messages</code><br><br>
+<b>3. Receive API Key:</b> If active, the bot replies within seconds with: <i>"API Key generated: <b>123456</b>"</i>.<br>
+Copy that number and paste it below!<br><br>
+<span style="color: #f59e0b; font-size: 0.85em;">ℹ️ <b>Note:</b> CallMeBot's WhatsApp servers occasionally report full due to high traffic. If unavailable, you can also use the official <b>Telegram Bot</b> below for 100% instant, guaranteed phone alerts.</span>
 </div>
 """,
                     unsafe_allow_html=True
