@@ -16,19 +16,22 @@ VIP_TITLES = [
     r"\baccounting\b", r"\bfinance team\b", r"\bbilling department\b"
 ]
 
-FINANCIAL_FRAUD_PATTERNS = [
+HARD_WIRE_PATTERNS = [
     r"\bwire transfer\b",
     r"\bswift code\b",
     r"\brouting number\b",
-    r"\bbank account (details|number|update|change)\b",
-    r"\bchange (of|our) banking details\b",
-    r"\bupdate banking\b",
+    r"\bchange (of|our|the) banking details\b",
+    r"\bupdate banking (details|information)\b",
     r"\bnew bank account\b",
-    r"\bremit(tance)? (immediately|urgently|payment)\b",
+    r"\bremit(tance)? (immediately|urgently)\b",
+    r"\bach transfer\b"
+]
+
+TRANSACTIONAL_PATTERNS = [
     r"\bprocess (\$?[\d,]+|invoice|payment|transfer)\b",
     r"\bpayment (is )?overdue\b",
     r"\bpay the attached invoice\b",
-    r"\bach (transfer|payment)\b"
+    r"\bbank account (details|number|update|change)\b"
 ]
 
 CONFIDENTIALITY_SECRECY_PATTERNS = [
@@ -60,7 +63,12 @@ def parse_from_header(from_header: str) -> Tuple[str, str, str]:
     domain = email_addr.split('@')[-1] if '@' in email_addr else ""
     return display_name, email_addr, domain
 
-def detect_bec_and_impersonation(headers: Dict[str, Any], body: str, attachments: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+def detect_bec_and_impersonation(
+    headers: Dict[str, Any],
+    body: str,
+    attachments: List[Dict[str, Any]] = None,
+    auth_alignment: Any = None
+) -> Dict[str, Any]:
     """
     Deep forensic detection of Business Email Compromise (BEC),
     Display-Name Spoofing, Executive Impersonation, and Wire Fraud Lures.
@@ -85,6 +93,15 @@ def detect_bec_and_impersonation(headers: Dict[str, Any], body: str, attachments
     subject_lower = (subject or "").lower()
     combined_text = f"{subject_lower} {body_lower}"
 
+    # Determine cryptographic authentication status
+    auth_ok = False
+    if auth_alignment:
+        auth_ok = auth_alignment.get("effective_dmarc") in ["PASS", "PASS (Delegated ESP)"]
+    if not auth_ok:
+        auth_res = str(headers.get("authentication-results", "")).lower()
+        if "dmarc=pass" in auth_res or ("spf=pass" in auth_res and "dkim=pass" in auth_res):
+            auth_ok = True
+
     bec_score = 0
     flags = []
     is_display_name_spoof = False
@@ -99,7 +116,7 @@ def detect_bec_and_impersonation(headers: Dict[str, Any], body: str, attachments
             flags.append(f"Executive/VIP leadership title identified in Display Name: '{display_name}'")
             bec_score += 35
             break
-        elif re.search(pattern, combined_text):
+        elif re.search(pattern, combined_text) and not auth_ok:
             flags.append("Executive role/authority invoked in message text")
             bec_score += 15
             break
@@ -127,17 +144,27 @@ def detect_bec_and_impersonation(headers: Dict[str, Any], body: str, attachments
         bec_score += 35
 
     # 3. Financial / Wire Transfer Fraud Lures
-    found_financial = []
-    for pattern in FINANCIAL_FRAUD_PATTERNS:
+    found_hard_wire = []
+    for pattern in HARD_WIRE_PATTERNS:
         match = re.search(pattern, combined_text)
         if match:
-            found_financial.append(match.group(0))
-            bec_score += 20
+            found_hard_wire.append(match.group(0))
 
-    if found_financial:
+    found_transactional = []
+    for pattern in TRANSACTIONAL_PATTERNS:
+        match = re.search(pattern, combined_text)
+        if match:
+            found_transactional.append(match.group(0))
+
+    # Real financial lure requires either hard wire patterns, OR transactional patterns on unauthenticated/spoofed senders
+    if found_hard_wire:
         is_financial_lure = True
-        unique_financial = list(set(found_financial))[:3]
-        flags.append(f"Financial routing / wire transfer triggers: {', '.join(unique_financial)}")
+        bec_score += 30
+        flags.append(f"Urgent wire transfer / account modification triggers: {', '.join(list(set(found_hard_wire))[:3])}")
+    elif found_transactional and (not auth_ok or is_display_name_spoof):
+        is_financial_lure = True
+        bec_score += 20
+        flags.append(f"Unverified financial/payment routing triggers: {', '.join(list(set(found_transactional))[:3])}")
 
     # 4. Secrecy & Meeting Lures ("I am in a meeting, do not call me")
     for pattern in CONFIDENTIALITY_SECRECY_PATTERNS:
@@ -164,7 +191,6 @@ def detect_bec_and_impersonation(headers: Dict[str, Any], body: str, attachments
     bec_score = min(bec_score, 100)
 
     # Multi-class verdict synthesis
-    # Categories: BEC, Executive Impersonation, Malware Delivery, Credential Harvesting, Spam, Legitimate
     has_malware_att = False
     if attachments:
         has_malware_att = any(
@@ -177,21 +203,28 @@ def detect_bec_and_impersonation(headers: Dict[str, Any], body: str, attachments
     if has_malware_att:
         verdict = "Malware Delivery"
         confidence = 94
-    elif bec_score >= 50 and is_financial_lure:
+    elif (bec_score >= 50 and is_financial_lure) or (is_financial_lure and is_display_name_spoof):
         verdict = "Business Email Compromise (BEC / Wire Fraud)"
         confidence = min(int(bec_score * 0.95 + 10), 99)
-    elif bec_score >= 40 and is_executive_lure and is_display_name_spoof:
+    elif is_display_name_spoof and (is_executive_lure or has_dept_lure):
         verdict = "Executive Impersonation"
         confidence = min(int(bec_score * 0.9 + 10), 95)
     elif has_cred_lure and ("verify" in combined_text or "suspension" in combined_text or "urgent" in combined_text) and not is_newsletter:
-        verdict = "Credential Harvesting"
-        confidence = 88
-    elif bec_score >= 40 and is_financial_lure:
+        if auth_ok:
+            verdict = "Security Alert / Notification (Authenticated)"
+            confidence = 88
+        else:
+            verdict = "Credential Harvesting"
+            confidence = 88
+    elif bec_score >= 40 and is_financial_lure and not auth_ok:
         verdict = "Suspicious Financial / Authority Solicitation"
         confidence = 72
     elif is_newsletter:
         verdict = "Standard / Legitimate (Newsletter / Subscription)"
         confidence = 95
+    elif auth_ok and (found_transactional or "inr" in combined_text or "statement" in combined_text or "debited" in combined_text):
+        verdict = "Standard / Legitimate (Transactional / Billing)"
+        confidence = 90
     else:
         verdict = "Standard / Legitimate"
         confidence = 85

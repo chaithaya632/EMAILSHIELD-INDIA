@@ -173,6 +173,116 @@ generate_ncrp_pdf_annexure(ncrp_case, ncrp_pdf)
 assert os.path.exists(ncrp_pdf)
 print(f"NCRP PDF Annexure created successfully: {ncrp_pdf} ({os.path.getsize(ncrp_pdf)} bytes)")
 
-print("\n>>> ALL 13 FORENSIC TESTS COMPLETED AND PASSED 100%! <<<")
+print("\n--- TEST 14: False-Positive Calibration (Everyday Legitimate Emails) ---")
+benign_test_cases = [
+    {
+        "name": "Vaibhav Sisinty Newsletter",
+        "raw": '''From: "Vaibhav Sisinty" <vaibhav@growthschool.io>
+Reply-To: vaibhav@sisinty.com
+To: user@example.com
+Subject: 5 AI tools that saved me 20 hours this week
+List-Unsubscribe: <https://growthschool.io/unsubscribe>
+Authentication-Results: mx.google.com; dkim=pass header.i=@growthschool.io; spf=pass smtp.mailfrom=growthschool.io; dmarc=pass
+
+Hey everyone,
+Here are the top 5 AI workflows we tested at GrowthSchool. Login to the community to grab the prompts.
+Cheers,
+Vaibhav Sisinty
+Founder, GrowthSchool'''
+    },
+    {
+        "name": "HDFC Bank NetBanking Statement",
+        "raw": '''From: "HDFC Bank InstaAlerts" <alerts@hdfcbank.net>
+To: user@example.com
+Subject: Transaction Alert: INR 2,500 debited from A/c XX1234
+Authentication-Results: mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass smtp.mailfrom=hdfcbank.net; dmarc=pass
+
+Dear Customer,
+INR 2,500.00 has been debited from your account XX1234 on 12-Sep-2026.
+To view your full statement or update your banking preferences, login to NetBanking at https://netbanking.hdfcbank.com/netbanking.
+'''
+    },
+    {
+        "name": "Google Password Security Alert",
+        "raw": '''From: "Google Security" <no-reply@accounts.google.com>
+To: user@example.com
+Subject: Security alert: New sign-in on Windows
+Authentication-Results: mx.google.com; dkim=pass header.i=@accounts.google.com; spf=pass smtp.mailfrom=accounts.google.com; dmarc=pass
+
+Your Google Account was just signed in from a new Windows device.
+If this was you, you don't need to do anything. If not, verify and change your password at https://myaccount.google.com/security.
+'''
+    },
+    {
+        "name": "Colleague Workplace Project Email",
+        "raw": '''From: "Rahul Sharma" <rahul.sharma@tcs.com>
+To: user@example.com
+Subject: Urgent: Quarterly planning sync tomorrow
+Authentication-Results: mx.google.com; dkim=pass header.i=@tcs.com; spf=pass smtp.mailfrom=tcs.com; dmarc=pass
+
+Hi team,
+This is urgent - we need to finalize the quarterly budget presentation before 10 AM.
+Please review the slide deck on the internal portal and login to submit your inputs.
+Thanks,
+Rahul'''
+    },
+    {
+        "name": "SBI Card Statement",
+        "raw": '''From: "SBI Card" <alerts@sbicard.com>
+To: user@example.com
+Subject: Your SBI Card E-Statement for Account ending 4321
+Authentication-Results: mx.google.com; dkim=pass header.i=@sbicard.com; spf=pass smtp.mailfrom=sbicard.com; dmarc=pass
+
+Dear Cardholder,
+Your monthly statement for SBI Card ending in 4321 is now ready.
+Total Amount Due: INR 8,420.00 | Minimum Amount Due: INR 500.00 | Payment Due Date: 25-Sep-2026.
+Please pay your bill online through YONO SBI app or at https://www.sbicard.com.
+'''
+    },
+    {
+        "name": "Amazon.in Order Confirmation",
+        "raw": '''From: "Amazon.in" <order-update@amazon.in>
+To: user@example.com
+Subject: Ordered: "Logitech Wireless Mouse"
+Authentication-Results: mx.google.com; dkim=pass header.i=@amazon.in; spf=pass smtp.mailfrom=amazon.in; dmarc=pass
+
+Thank you for your order!
+Your order #402-1234567-8901234 has been confirmed.
+Total: INR 799.00 paid via UPI.
+Track your package or update delivery instructions at https://www.amazon.in/gp/your-account/order-history.
+'''
+    },
+    {
+        "name": "Swiggy Food Delivery Receipt",
+        "raw": '''From: "Swiggy" <no-reply@swiggy.in>
+To: user@example.com
+Subject: Order Delivered! Here is your receipt
+Authentication-Results: mx.google.com; dkim=pass header.i=@swiggy.in; spf=pass smtp.mailfrom=swiggy.in; dmarc=pass
+
+Hi Amit,
+Your order from Meghana Foods has been delivered.
+Paid: INR 450 via UPI (swiggy@axisbank).
+Invoice #SW-89412 attached.
+'''
+    },
+    {
+        "name": "Personal Casual Email",
+        "raw": '''From: "Priya Patel" <priya.patel92@gmail.com>
+To: user@example.com
+Subject: Weekend plans?
+Authentication-Results: mx.google.com; dkim=pass header.i=@gmail.com; spf=pass smtp.mailfrom=gmail.com; dmarc=pass
+
+Hey! Are you free this Saturday for coffee? Let me know!'''
+    }
+]
+
+for tc in benign_test_cases:
+    p = SecureEmailParser(tc["raw"].encode()).parse()
+    iocs = extract_all_indicators(p["body"] + " " + str(p["headers"]))
+    out = agent.run_investigation(p, iocs)
+    print(f"Benign Email: {tc['name']} -> Risk: {out['risk_score']} | Verdict: {out['bec_telemetry']['verdict']} (Confidence: {out['bec_telemetry']['confidence_pct']}%)")
+    assert out["risk_score"] == "LOW", f"Expected LOW risk for {tc['name']}, got {out['risk_score']}"
+
+print("\n>>> ALL 14 FORENSIC TESTS COMPLETED AND PASSED 100%! <<<")
 
 

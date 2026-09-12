@@ -113,16 +113,26 @@ def evaluate_rules(
                     "explanation": "Standard bounce handling mailbox routed via authorized email delivery provider."
                 })
 
+    # Check authentication status
+    auth_ok = False
+    if auth_alignment:
+        auth_ok = auth_alignment.get("effective_dmarc") in ["PASS", "PASS (Delegated ESP)"]
+    if not auth_ok:
+        auth_res = str(headers.get("authentication-results", "")).lower()
+        if "dmarc=pass" in auth_res or ("spf=pass" in auth_res and "dkim=pass" in auth_res):
+            auth_ok = True
+
     # 3. Urgency language
     urgency_keywords = ["urgent", "immediate action required", "account suspension", "verify your account", "overdue"]
     for kw in urgency_keywords:
         if kw in body:
+            is_suspension = ("suspension" in body or "verify your account" in body)
             findings.append({
                 "rule_id": "RULE-007",
                 "finding": "Urgency language detected",
                 "evidence": f"Keyword found: '{kw}'",
-                "severity": "MEDIUM",
-                "explanation": "Body contains language intended to create urgency."
+                "severity": "MEDIUM" if (not auth_ok or is_suspension) else "LOW",
+                "explanation": "Body contains language intended to create urgency or accelerate recipient response."
             })
             break # Only fire once
 
@@ -134,8 +144,8 @@ def evaluate_rules(
                 "rule_id": "RULE-006",
                 "finding": "Credential/Action request",
                 "evidence": f"Keyword found: '{kw}'",
-                "severity": "MEDIUM",
-                "explanation": "Body contains language requesting user login or credentials."
+                "severity": "MEDIUM" if not auth_ok else "LOW",
+                "explanation": "Body contains language referencing account login, credentials, or portal verification."
             })
             break
 
@@ -286,25 +296,40 @@ def evaluate_rules(
 
     return findings
 
-def calculate_hybrid_risk(rule_findings: List[Dict[str, str]], ml_prob: float) -> tuple[str, List[str]]:
+def calculate_hybrid_risk(
+    rule_findings: List[Dict[str, str]],
+    ml_prob: float,
+    auth_alignment: Any = None
+) -> tuple[str, List[str]]:
     risk_score = "LOW"
     reasons = []
 
-    high_rules = sum(1 for f in rule_findings if f["severity"] == "HIGH")
-    medium_rules = sum(1 for f in rule_findings if f["severity"] == "MEDIUM")
-    
-    if ml_prob > 0.85 or high_rules >= 1 or (medium_rules >= 3 and ml_prob > 0.6):
+    auth_ok = False
+    if auth_alignment:
+        auth_ok = auth_alignment.get("effective_dmarc") in ["PASS", "PASS (Delegated ESP)"]
+
+    high_rules = sum(1 for f in rule_findings if f.get("severity") == "HIGH")
+    medium_rules = sum(1 for f in rule_findings if f.get("severity") == "MEDIUM")
+
+    if high_rules >= 1:
         risk_score = "HIGH"
-    elif ml_prob > 0.65 or (medium_rules >= 2):
+    elif not auth_ok and (ml_prob > 0.85 or (medium_rules >= 3 and ml_prob > 0.6)):
+        risk_score = "HIGH"
+    elif not auth_ok and (ml_prob > 0.65 or medium_rules >= 2):
+        risk_score = "SUSPICIOUS"
+    elif auth_ok and high_rules == 0:
+        # Authenticated email with no high-severity forensic violations
+        risk_score = "LOW"
+    elif ml_prob > 0.88 and medium_rules >= 2:
         risk_score = "SUSPICIOUS"
 
     if high_rules > 0:
         reasons.append(f"Critical forensic violations detected ({high_rules} High-Severity Finding{'s' if high_rules > 1 else ''}).")
-    if medium_rules > 0:
+    if medium_rules > 0 and (not auth_ok or high_rules > 0):
         reasons.append(f"Suspicious heuristic indicators detected ({medium_rules}).")
-    if ml_prob > 0.85:
+    if ml_prob > 0.85 and not auth_ok:
         reasons.append(f"ML probability indicates strong phishing signals ({ml_prob:.2f}).")
-    elif ml_prob > 0.65:
+    elif ml_prob > 0.65 and not auth_ok:
         reasons.append(f"ML probability indicates moderate phishing signals ({ml_prob:.2f}).")
 
     if not reasons:

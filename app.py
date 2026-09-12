@@ -706,8 +706,10 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
         current_inv = existing_rec.get("assigned_investigator", "Unassigned") if existing_rec else "Unassigned"
         current_notes = existing_rec.get("analyst_notes", "") if existing_rec else ""
 
-        threat_v = bec_obj.verdict if bec_obj else risk_score
-        verdict_c = bec_obj.confidence_pct if bec_obj else (90 if risk_score == "HIGH" else 75)
+        threat_v = bec_obj.verdict if bec_obj else ("Standard / Legitimate" if risk_score == "LOW" else risk_score)
+        if risk_score == "LOW" and threat_v in ["Business Email Compromise (BEC / Wire Fraud)", "Executive Impersonation", "Credential Harvesting", "Malware Delivery"]:
+            threat_v = "Standard / Legitimate"
+        verdict_c = bec_obj.confidence_pct if bec_obj else (90 if risk_score == "HIGH" else 85)
 
         case_report = CaseReport(
             case_id=case_id,
@@ -758,7 +760,12 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
         
         with tab1:
             critical_or_high_urls = [u for u in case_report.url_analyses if u.risk_level in ["CRITICAL", "HIGH"]]
-            has_bec = case_report.bec_telemetry and (case_report.bec_telemetry.is_display_name_spoof or case_report.bec_telemetry.is_financial_lure)
+            auth_is_valid = bool(case_report.auth_alignment and case_report.auth_alignment.effective_dmarc in ["PASS", "PASS (Delegated ESP)"])
+            has_bec = case_report.bec_telemetry and (
+                case_report.bec_telemetry.is_display_name_spoof or
+                (case_report.bec_telemetry.is_financial_lure and case_report.bec_telemetry.bec_risk_score >= 50 and not auth_is_valid) or
+                ("BEC" in case_report.threat_verdict and not auth_is_valid)
+            )
             has_quishing = bool(quishing_findings)
             has_high_rule = any(r.severity == "HIGH" for r in rule_findings)
             

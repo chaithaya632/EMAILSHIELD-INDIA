@@ -181,7 +181,7 @@ class AutonomousForensicAgent:
             "executive/VIP titles sent from free webmail, and wire transfer or invoice payment lures."
         )
         action_6 = "call_tool: BEC_Impersonation_Detector_Tool(headers, body)"
-        bec_telemetry = detect_bec_and_impersonation(headers, body, attachment_analyses)
+        bec_telemetry = detect_bec_and_impersonation(headers, body, attachment_analyses, auth_alignment=auth_alignment)
         obs_6 = (
             f"Threat Classification: {bec_telemetry.get('verdict')} (Confidence: {bec_telemetry.get('confidence_pct')}%). "
             f"Display Spoof: {bec_telemetry.get('is_display_name_spoof')} | Wire Fraud Lures: {bec_telemetry.get('is_financial_lure')}. "
@@ -293,7 +293,7 @@ class AutonomousForensicAgent:
             relay_transit=relay_transit
         )
         rule_findings = [RuleFinding(**r) for r in rule_results]
-        risk_score, reasons = calculate_hybrid_risk(rule_results, prob)
+        risk_score, reasons = calculate_hybrid_risk(rule_results, prob, auth_alignment=auth_alignment)
         
         obs_10 = (
             f"Triggered {len(rule_results)} forensic rules. "

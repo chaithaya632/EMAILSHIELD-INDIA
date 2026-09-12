@@ -3,6 +3,7 @@ import urllib.parse
 from typing import Dict, Any, List, Optional
 import requests
 from core.schemas import URLAnalysisResult
+from core.domain_reputation import OFFICIAL_BRAND_DOMAINS, KNOWN_REPUTABLE_DOMAINS
 
 SHORTENER_DOMAINS = {
     "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd",
@@ -41,7 +42,8 @@ VERIFIED_LEGIT_SERVICES = {
     "growthschool.io", "sisinty.com", "linkedin.com", "twitter.com", "x.com",
     "instagram.com", "facebook.com", "github.com", "apple.com", "microsoft.com",
     "whatsapp.com", "telegram.org", "zoom.us", "calendly.com", "notion.so",
-    "luma.com", "lu.ma", "hubspot.com", "stripe.com", "razorpay.com", "eventbrite.com"
+    "luma.com", "lu.ma", "hubspot.com", "stripe.com", "razorpay.com", "eventbrite.com",
+    "sbicard.com", "hdfcbank.com", "hdfcbank.net", "icicibank.com", "sbi.co.in", "amazon.in"
 }
 
 def is_verified_service(host_str: str) -> bool:
@@ -49,6 +51,17 @@ def is_verified_service(host_str: str) -> bool:
         return False
     h = host_str.lower().strip()
     return any(h == s or h.endswith(f".{s}") for s in VERIFIED_LEGIT_SERVICES)
+
+def is_official_brand_destination(host_str: str) -> bool:
+    if not host_str:
+        return False
+    h = host_str.lower().strip()
+    if h in KNOWN_REPUTABLE_DOMAINS or any(h.endswith(f".{kd}") for kd in KNOWN_REPUTABLE_DOMAINS):
+        return True
+    for brand, legit_domains in OFFICIAL_BRAND_DOMAINS.items():
+        if any(h == ld or h.endswith(f".{ld}") for ld in legit_domains):
+            return True
+    return False
 
 def defang_url(url: str) -> str:
     """Converts a live URL into a defanged safe string (e.g., hxxps[://]bad[.]com)."""
@@ -150,39 +163,15 @@ def analyze_url(url: str, resolve_redirects: bool = True) -> URLAnalysisResult:
             suspicious_indicators=suspicious_indicators
         )
 
-    # 4. Check for Brand Impersonation & Typosquatting
-    impersonated_brand = None
-    for brand in MAJOR_BRANDS:
-        if brand in final_host:
-            # Check if it is the official root domain (e.g. paypal.com vs paypal.com.verify-billing.xyz)
-            if not final_host.endswith(f".{brand}.com") and final_host != f"{brand}.com":
-                impersonated_brand = brand
-                break
-        elif brand in final_path or brand in final_query:
-            if not final_host.endswith(f".{brand}.com") and final_host != f"{brand}.com":
-                impersonated_brand = brand
-                break
-
-    # 5. Check for Credential Harvesting Keywords
-    harvesting_keywords_found = [kw for kw in PHISHING_KEYWORDS if kw in final_path or kw in final_query]
-
-    # 6. Check for Suspicious TLDs
-    has_suspicious_tld = any(final_host.endswith(tld) for tld in SUSPICIOUS_TLDS)
-    if has_suspicious_tld:
-        suspicious_indicators.append("Suspicious / High-Abuse TLD")
-        reasons.append("Domain uses an abuse-prone top-level domain frequently used in throwaway phishing attacks.")
-
-    # 7. Check for Tracking / Reconnaissance Beacons
-    is_tracking_beacon = any(trk in final_path or trk in final_query for trk in ["/track", "pixel.gif", "open.php", "beacon", "stat.php"])
-
-    # Check if destination is a verified legitimate service or platform
-    is_verified_dest = is_verified_service(final_host) or is_verified_service(host)
+    # Check if destination is a verified legitimate service or official brand platform
+    is_official_dest = is_official_brand_destination(final_host) or is_official_brand_destination(host)
+    is_verified_dest = is_verified_service(final_host) or is_verified_service(host) or is_official_dest
 
     if is_verified_dest and not detected_payload_ext:
-        # Known legitimate platform (YouTube, Substack, GrowthSchool, LinkedIn, Google, etc.)
+        # Known legitimate platform or official banking/enterprise domain
         threat_category = "Clean / Verified Platform Link"
         risk_level = "LOW"
-        potential_impact = f"Directs to verified platform or creator service ('{final_host}')."
+        potential_impact = f"Directs to verified platform or legitimate service ('{final_host}')."
         recommended_action = "Standard vigilance. Link is hosted on an authentic platform."
         return URLAnalysisResult(
             url=url,
@@ -198,6 +187,27 @@ def analyze_url(url: str, resolve_redirects: bool = True) -> URLAnalysisResult:
             reasons=reasons,
             suspicious_indicators=suspicious_indicators
         )
+
+    # 4. Check for Brand Impersonation & Typosquatting (for non-verified hosts)
+    impersonated_brand = None
+    if not is_official_dest:
+        for brand in MAJOR_BRANDS:
+            # Check if non-official domain is trying to mimic this brand in its hostname
+            if brand in final_host:
+                impersonated_brand = brand
+                break
+
+    # 5. Check for Credential Harvesting Keywords
+    harvesting_keywords_found = [kw for kw in PHISHING_KEYWORDS if kw in final_path or kw in final_query]
+
+    # 6. Check for Suspicious TLDs
+    has_suspicious_tld = any(final_host.endswith(tld) for tld in SUSPICIOUS_TLDS)
+    if has_suspicious_tld:
+        suspicious_indicators.append("Suspicious / High-Abuse TLD")
+        reasons.append("Domain uses an abuse-prone top-level domain frequently used in throwaway phishing attacks.")
+
+    # 7. Check for Tracking / Reconnaissance Beacons
+    is_tracking_beacon = any(trk in final_path or trk in final_query for trk in ["/track", "pixel.gif", "open.php", "beacon", "stat.php"])
 
     # 8. Synthesize Threat Category & Impact
     if impersonated_brand and harvesting_keywords_found:

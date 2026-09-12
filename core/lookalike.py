@@ -55,6 +55,16 @@ def get_base_domain(domain: str) -> str:
         return parts[-2]
     return clean
 
+OFFICIAL_EXEMPT_DOMAINS = {
+    "google.com", "google.co.in", "gmail.com", "microsoft.com", "outlook.com",
+    "apple.com", "amazon.com", "amazon.in", "paypal.com", "paypal.in",
+    "sbi.co.in", "statebankofindia.com", "onlinesbi.sbi", "hdfcbank.com",
+    "icicibank.com", "axisbank.com", "kotak.com", "pnbindia.in", "rbi.org.in",
+    "youtube.com", "linkedin.com", "twitter.com", "x.com", "instagram.com",
+    "facebook.com", "netflix.com", "github.com", "substack.com", "growthschool.io",
+    "yahoo.com", "zoho.com", "zoho.in", "swiggy.in", "zomato.com", "flipkart.com"
+}
+
 def detect_lookalike_domain(domain: str) -> Dict[str, Any]:
     """
     Forensic detection of Punycode, homoglyphs, typosquatting,
@@ -72,6 +82,23 @@ def detect_lookalike_domain(domain: str) -> Dict[str, Any]:
         }
 
     domain_lower = domain.lower().strip()
+    if domain_lower.startswith("http://") or domain_lower.startswith("https://"):
+        domain_lower = domain_lower.split("://", 1)[1]
+    domain_lower = domain_lower.split("/")[0].split(":")[0]
+
+    # Quick exit for verified legitimate enterprise & brand domains
+    if any(domain_lower == od or domain_lower.endswith(f".{od}") for od in OFFICIAL_EXEMPT_DOMAINS):
+        return {
+            "domain": domain,
+            "base_name": get_base_domain(domain_lower),
+            "is_lookalike": False,
+            "impersonated_brand": None,
+            "technique": "None",
+            "similarity_score": 0.0,
+            "risk_level": "LOW",
+            "reasons": ["Verified official enterprise domain."]
+        }
+
     base_name = get_base_domain(domain_lower)
     reasons = []
     technique = "None"
