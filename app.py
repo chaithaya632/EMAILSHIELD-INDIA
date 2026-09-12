@@ -1141,11 +1141,16 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             pdf_path = f"data/reports/{case_id}.pdf"
             json_path = f"data/reports/{case_id}.json"
             
-            # Re-fetch updated metadata for PDF
+            # Re-fetch updated metadata for PDF & NCRP packager
             updated_case_dict = case_report.model_dump()
             updated_case_dict["status"] = new_status
             updated_case_dict["assigned_investigator"] = new_investigator
+            updated_case_dict["investigator"] = new_investigator
             updated_case_dict["analyst_notes"] = new_notes
+            updated_case_dict["body_text"] = full_email_body
+            updated_case_dict["sha256"] = case_report.original_sha256
+            if geolocations:
+                updated_case_dict["originating_ip"] = geolocations[0].ip
             
             generate_pdf_report(updated_case_dict, pdf_path)
             generate_json_report(updated_case_dict, json_path)

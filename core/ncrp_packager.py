@@ -25,10 +25,18 @@ def generate_ncrp_complaint_text(case_data: Dict[str, Any]) -> str:
     timestamp = case_data.get("timestamp") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
     sender = case_data.get("sender", "Unknown")
     subject = case_data.get("subject", "N/A")
-    orig_ip = case_data.get("originating_ip", "Unknown")
-    geo = case_data.get("geolocation", {}) or {}
-    sha256 = case_data.get("sha256", "N/A")
-    investigator = case_data.get("investigator", "Investigating Officer / Cyber Cell")
+    
+    geo_raw = case_data.get("geolocation")
+    if isinstance(geo_raw, list):
+        geo = geo_raw[0] if geo_raw else {}
+    elif isinstance(geo_raw, dict):
+        geo = geo_raw
+    else:
+        geo = {}
+        
+    orig_ip = case_data.get("originating_ip") or geo.get("ip", "Unknown")
+    sha256 = case_data.get("sha256") or case_data.get("original_sha256", "N/A")
+    investigator = case_data.get("investigator") or case_data.get("assigned_investigator", "Investigating Officer / Cyber Cell")
     
     # Financial indicators
     body_text = case_data.get("body_text", "")
@@ -115,13 +123,21 @@ def generate_ncrp_pdf_annexure(case_data: Dict[str, Any], output_path: str) -> s
     story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#1e3a8a'), spaceAfter=8))
     
     # Table 1: Incident & Suspect Summary
-    geo = case_data.get("geolocation", {}) or {}
+    geo_raw = case_data.get("geolocation")
+    if isinstance(geo_raw, list):
+        geo = geo_raw[0] if geo_raw else {}
+    elif isinstance(geo_raw, dict):
+        geo = geo_raw
+    else:
+        geo = {}
+        
+    orig_ip = case_data.get("originating_ip") or geo.get("ip", "Unknown")
     story.append(Paragraph("1. INCIDENT & SUSPECT ENTITY SUMMARY", h2_style))
     t1_data = [
         [Paragraph("<b>Case Reference:</b>", body_style), Paragraph(safe(case_data.get('case_id')), body_style), Paragraph("<b>Intake Date:</b>", body_style), Paragraph(safe(case_data.get('timestamp')), body_style)],
-        [Paragraph("<b>Suspect Email:</b>", body_style), Paragraph(safe(case_data.get('sender')), body_style), Paragraph("<b>Originating IP:</b>", body_style), Paragraph(f"<code>{safe(case_data.get('originating_ip'))}</code>", body_style)],
+        [Paragraph("<b>Suspect Email:</b>", body_style), Paragraph(safe(case_data.get('sender')), body_style), Paragraph("<b>Originating IP:</b>", body_style), Paragraph(f"<code>{safe(orig_ip)}</code>", body_style)],
         [Paragraph("<b>Subject Line:</b>", body_style), Paragraph(safe(case_data.get('subject'))[:40], body_style), Paragraph("<b>ISP / Operator:</b>", body_style), Paragraph(safe(geo.get('org')), body_style)],
-        [Paragraph("<b>Suspect Location:</b>", body_style), Paragraph(f"{safe(geo.get('city'))}, {safe(geo.get('country'))}", body_style), Paragraph("<b>Investigator:</b>", body_style), Paragraph(safe(case_data.get('investigator', 'Cyber Cell')), body_style)],
+        [Paragraph("<b>Suspect Location:</b>", body_style), Paragraph(f"{safe(geo.get('city'))}, {safe(geo.get('country'))}", body_style), Paragraph("<b>Investigator:</b>", body_style), Paragraph(safe(case_data.get('investigator', case_data.get('assigned_investigator', 'Cyber Cell'))), body_style)],
     ]
     t1 = Table(t1_data, colWidths=[90, 180, 90, 180])
     t1.setStyle(TableStyle([
@@ -174,7 +190,7 @@ def generate_ncrp_pdf_annexure(case_data: Dict[str, Any], output_path: str) -> s
         f"I, the undersigned Cyber Crime Investigator / SOC Analyst, hereby certify that the electronic evidence "
         f"itemized herein was analyzed using the EMAILSHIELD INDIA platform. The raw electronic mail file (.eml) "
         f"has an immutable cryptographic <b>SHA-256 Hash Digest of:</b><br/>"
-        f"<code>{safe(case_data.get('sha256'))}</code><br/><br/>"
+        f"<code>{safe(case_data.get('sha256') or case_data.get('original_sha256'))}</code><br/><br/>"
         f"Throughout the investigation lifecycle, the computing system operated normally without data corruption, "
         f"and the digital chain of custody was strictly preserved in compliance with the Information Technology Act, 2000 "
         f"and RFC 5322 electronic records standards. This document constitutes primary electronic evidence admissible in court."
