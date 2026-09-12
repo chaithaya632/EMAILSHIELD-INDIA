@@ -576,16 +576,14 @@ elif selected_nav == "📡 Live Mailbox Sentinel (50s Auto-Defense)":
         # WhatsApp Setup
         wa_enabled = st.checkbox("💬 Enable WhatsApp Alerts (CallMeBot API - ₹0 Free)", value=st.session_state.get("sentinel_wa_enabled", False), key="sentinel_wa_enabled")
         if wa_enabled:
-            with st.expander("⚡ How to get your Free CallMeBot API Key (30 Seconds)", expanded=True):
+            with st.expander("⚡ CallMeBot WhatsApp Setup & Gateway Status", expanded=True):
                 st.markdown(
                     """
-<div style="background-color: #0f172a; border-left: 4px solid #22c55e; padding: 12px; border-radius: 6px; font-size: 0.9em; margin-bottom: 12px;">
-<b style="color: #22c55e;">Quick 3-Step Setup (100% Free Forever):</b><br>
-<b>1. Click Direct Link:</b> 👉 <a href="https://wa.me/34941872320?text=I%20allow%20callmebot%20to%20send%20me%20messages" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">Click Here to Open WhatsApp with Bot</a><br>
-<span style="color: #94a3b8; font-size: 0.85em;">(Or message <code>+34 941 87 23 20</code> on WhatsApp)</span><br><br>
-<b>2. Send Message:</b> Send this text to the bot: <code>I allow callmebot to send me messages</code><br><br>
-<b>3. Copy API Key:</b> The bot will reply within 5 seconds with: <i>"API Key generated: <b>123456</b>"</i>.<br>
-Copy that number and paste it below!
+<div style="background-color: #0f172a; border-left: 4px solid #f59e0b; padding: 12px; border-radius: 6px; font-size: 0.9em; margin-bottom: 12px;">
+<b style="color: #f59e0b;">⚠️ Notice on CallMeBot WhatsApp Gateway:</b><br>
+CallMeBot operates unofficial WhatsApp numbers that Meta (WhatsApp) periodically rotates or restricts due to capacity. According to CallMeBot's website, their WhatsApp gateway periodically reports <i>"The bot is currently full / slots unavailable"</i>.<br><br>
+<b>If you already have a CallMeBot API key:</b> Enter your phone and key below.<br>
+<b>For 100% reliable, instant alerts right now:</b> Use the <b>Telegram Bot</b> option below (takes 30 seconds, official API, 100% free, never full).
 </div>
 """,
                     unsafe_allow_html=True
@@ -606,11 +604,27 @@ Copy that number and paste it below!
 
         # Telegram Setup
         st.markdown("---")
-        tg_enabled = st.checkbox("✈️ Enable Telegram Alerts (Telegram Bot - ₹0 Free)", value=st.session_state.get("sentinel_tg_enabled", False), key="sentinel_tg_enabled")
+        tg_enabled = st.checkbox("✈️ Enable Telegram Alerts (Official Telegram Bot - 100% Guaranteed & Free)", value=st.session_state.get("sentinel_tg_enabled", False), key="sentinel_tg_enabled")
         if tg_enabled:
+            with st.expander("⚡ How to get Telegram Bot Token & Chat ID (30 Seconds)", expanded=True):
+                st.markdown(
+                    """
+<div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 0.9em; margin-bottom: 12px;">
+<b style="color: #38bdf8;">Quick 2-Step Official Telegram Setup (Never blocked, 100% Free):</b><br>
+<b>1. Create your Personal Bot (15s):</b><br>
+• Open Telegram and search for <a href="https://t.me/BotFather" target="_blank" style="color: #38bdf8; font-weight: bold;">@BotFather</a>.<br>
+• Send <code>/newbot</code>, give it any name (e.g. <code>My EmailShield</code>) and username ending in bot (e.g. <code>my_shield_alert_bot</code>).<br>
+• BotFather will immediately give you an <b>HTTP API Token</b> (e.g. <code>7123456789:ABCdef...</code>). Paste it below.<br><br>
+<b>2. Get your Chat ID (10s):</b><br>
+• Message <a href="https://t.me/userinfobot" target="_blank" style="color: #38bdf8; font-weight: bold;">@userinfobot</a> on Telegram.<br>
+• It replies immediately with your numeric <b>Id</b> (e.g. <code>987654321</code>). Paste it below.<br>
+• Open your newly created bot in Telegram and click <b>START</b> so it can send you alerts!
+</div>
+""",
+                    unsafe_allow_html=True
+                )
             tg_token = st.text_input("Telegram Bot Token:", value=st.session_state.get("sentinel_tg_token", ""), type="password", placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ", key="sentinel_tg_token")
             tg_cid = st.text_input("Telegram Chat ID:", value=st.session_state.get("sentinel_tg_cid", ""), placeholder="e.g. 987654321", key="sentinel_tg_cid")
-            st.caption("💡 **Free Telegram Setup**: Message `@BotFather` and send `/newbot` to get your token. Get your Chat ID from `@userinfobot`.")
             
             if st.button("🧪 Send Test Telegram Alert", key="btn_test_tg"):
                 if not tg_token or not tg_cid:
