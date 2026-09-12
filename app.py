@@ -482,9 +482,26 @@ elif selected_nav == "🔍 Single Case Investigation":
             st.session_state["batch_results"] = None
             st.session_state["current_email_bytes"] = uploaded_file.getvalue()
     with col_up2:
-        st.write("Or quick test:")
-        if st.button("🧪 Load Sample Phishing"):
-            with open("samples/phishing.eml", "rb") as f:
+        st.write("Or quick test sample attacks:")
+        sample_choice = st.selectbox(
+            "Select attack vector:",
+            [
+                "1. PayPal Phishing (Auth Spoof & Header Diff)",
+                "2. Indian UPI Extortion & Bank Fraud",
+                "3. Quishing (Embedded QR Code Attack)",
+                "4. Weaponized Malware Attachment"
+            ],
+            key="sample_selector_quick"
+        )
+        sample_map = {
+            "1. PayPal Phishing (Auth Spoof & Header Diff)": "samples/phishing.eml",
+            "2. Indian UPI Extortion & Bank Fraud": "samples/indian_extortion_upi.eml",
+            "3. Quishing (Embedded QR Code Attack)": "samples/quishing_invoice.eml",
+            "4. Weaponized Malware Attachment": "samples/malware_lure.eml"
+        }
+        if st.button("🚀 Load Sample", key="btn_load_sample_chosen"):
+            target_path = sample_map.get(sample_choice, "samples/phishing.eml")
+            with open(target_path, "rb") as f:
                 st.session_state["batch_results"] = None
                 st.session_state["current_email_bytes"] = f.read()
             st.rerun()
@@ -500,22 +517,33 @@ elif selected_nav == "🔍 Single Case Investigation":
             st.markdown(
                 """
 <div style="background-color: #1e293b; border-radius: 8px; padding: 16px; border: 1px solid #334155; height: 100%;">
-<h4 style="margin-top: 0; color: #38bdf8;">🧪 1-Click Instant Demo</h4>
+<h4 style="margin-top: 0; color: #38bdf8;">🧪 1-Click Instant Attack Vectors</h4>
 <p style="color: #cbd5e1; font-size: 0.9em;">
-Instantly run full AI forensics on a pre-packaged multi-stage financial phishing attack sample (.eml):
+Instantly test full forensics across 4 pre-packaged cyber threat scenarios (.eml):
 </p>
 <ul style="color: #94a3b8; font-size: 0.85em;">
-<li>Autonomous ReAct agent reasoning trace</li>
-<li>Hop-by-hop relay flight path visualization</li>
-<li>Domain reputation &amp; ICANN RDAP analysis</li>
-<li>Court-admissible tamper-proof PDF generation</li>
+<li><b>PayPal Phishing:</b> Spoofed auth &amp; Forensic Header Diff</li>
+<li><b>Indian Cyber Fraud:</b> UPI VPAs, IFSC bank routes &amp; NCRP filing</li>
+<li><b>Quishing:</b> Embedded KYC QR code decoded via OpenCV</li>
+<li><b>Malware Lure:</b> Executable quarantine &amp; Defanged EML</li>
 </ul>
 </div>
 """,
                 unsafe_allow_html=True
             )
-            if st.button("🚀 Analyze Sample Phishing Email (.eml)", type="primary", use_container_width=True):
-                with open("samples/phishing.eml", "rb") as f:
+            card_sample = st.selectbox(
+                "Select demo scenario:",
+                [
+                    "1. PayPal Phishing (Auth Spoof & Header Diff)",
+                    "2. Indian UPI Extortion & Bank Fraud",
+                    "3. Quishing (Embedded QR Code Attack)",
+                    "4. Weaponized Malware Attachment"
+                ],
+                key="card_sample_select"
+            )
+            if st.button("🚀 Analyze Selected Scenario", type="primary", use_container_width=True, key="btn_card_load"):
+                target_path = sample_map.get(card_sample, "samples/phishing.eml")
+                with open(target_path, "rb") as f:
                     st.session_state["batch_results"] = None
                     st.session_state["current_email_bytes"] = f.read()
                 st.rerun()
@@ -713,7 +741,13 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
         # Save to SQLite
         save_case(case_report.model_dump())
         
-        st.success(f"Analysis Complete: {case_id} — SHA-256: {parsed_data['sha256'][:16]}...")
+        col_succ, col_rst = st.columns([3, 1])
+        with col_succ:
+            st.success(f"Analysis Complete: {case_id} — SHA-256: {parsed_data['sha256'][:16]}...")
+        with col_rst:
+            if st.button("🔄 Reset / Test Another", help="Clear current email and load another sample or file", key="btn_reset_analysis"):
+                st.session_state["current_email_bytes"] = None
+                st.rerun()
         
         # Render Dashboard
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
