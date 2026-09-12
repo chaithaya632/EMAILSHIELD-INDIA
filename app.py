@@ -811,14 +811,14 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                 st.markdown("#### 📋 Plain-Language Safety Summary:")
                 
                 chk_text = (
-                    "✅ **Authentic Sender:** The email originated from authorized mail servers with verified identity records.<br>"
-                    "✅ **Safe Hyperlinks:** No links redirect to password harvesting portals, tracking threats, or malware downloads.<br>"
-                    "✅ **No Fraudulent Lures:** No urgent wire transfer requests, digital arrest extortion, or fake payment demands."
+                    "• **Authentic Sender:** The email originated from authorized mail servers with verified identity records.\n\n"
+                    "• **Safe Hyperlinks:** No links redirect to password harvesting portals, tracking threats, or malware downloads.\n\n"
+                    "• **No Fraudulent Lures:** No urgent wire transfer requests, digital arrest extortion, or fake payment demands."
                 )
                 if is_newsletter_email:
-                    chk_text += "<br>✅ **Legitimate Newsletter:** Verified broadcast from an authorized creator or subscription service (RFC 2369 compliant)."
+                    chk_text += "\n\n• **Legitimate Newsletter:** Verified broadcast from an authorized creator or subscription service (RFC 2369 compliant)."
 
-                st.success(chk_text, unsafe_allow_html=True)
+                st.success(chk_text)
                 
                 if case_report.forwarded_by:
                     st.info(f"📬 **Forwarded for Verification by User:** `{case_report.forwarded_by}`")
