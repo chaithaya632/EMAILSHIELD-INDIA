@@ -101,5 +101,78 @@ generate_pdf_report(test_case_data, "data/reports/test_report.pdf")
 assert os.path.exists("data/reports/test_report.pdf")
 print("PDF report generated successfully at data/reports/test_report.pdf (Size:", os.path.getsize("data/reports/test_report.pdf"), "bytes)")
 
-print("\n>>> ALL 8 FORENSIC TESTS COMPLETED AND PASSED 100%! <<<")
+print("\n--- TEST 9: Indian Financial & UPI Route Extractor ---")
+from core.indian_banking import extract_indian_financial_indicators
+fin_text = "Urgent: Pay pending electricity bill to avoid power cut. UPI: discom.mumbai@okhdfcbank or A/C: 987654321098 IFSC: SBIN0001234"
+res_fin = extract_indian_financial_indicators(fin_text)
+print("Extracted UPI:", res_fin["upi_handles"])
+print("Identified Banks:", [b["bank_name"] for b in res_fin["identified_banks"]])
+assert "discom.mumbai@okhdfcbank" in res_fin["upi_handles"]
+assert "SBIN0001234" in res_fin["ifsc_codes"]
+assert res_fin["identified_banks"][0]["bank_name"] == "State Bank of India (SBI)"
+assert "987654321098" in res_fin["bank_accounts"]
+
+print("\n--- TEST 10: QR Code Phishing (Quishing) Scanner ---")
+import cv2
+from core.quishing import scan_for_quishing
+encoder = cv2.QRCodeEncoder_create()
+qr_img = encoder.encode("https://secure-login-portal-verify.com/token")
+_, png_bytes = cv2.imencode(".png", qr_img)
+quish_atts = [{"filename": "invoice_qr.png", "declared_mime": "image/png", "content_bytes": png_bytes.tobytes(), "sha256": "aabbcc112233"}]
+quish_res = scan_for_quishing(quish_atts)
+print("Quishing detected:", len(quish_res))
+assert len(quish_res) == 1
+assert "secure-login-portal-verify.com" in quish_res[0]["decoded_url"]
+print("Decoded URL:", quish_res[0]["decoded_url"])
+
+print("\n--- TEST 11: EML Sanitizer (Defanging & Binary Quarantine) ---")
+from core.eml_sanitizer import sanitize_eml_content
+with open("samples/malware_lure.eml", "rb") as f:
+    orig_eml = f.read()
+sanitized_bytes, defanged_u, quar_a = sanitize_eml_content(orig_eml)
+print(f"Quarantined attachments: {quar_a}")
+assert quar_a > 0
+assert b"EMAILSHIELD EVIDENCE QUARANTINE NOTICE" in sanitized_bytes
+
+print("\n--- TEST 12: Forensic Header Diff & Baseline Comparator ---")
+from core.header_diff import compare_headers_against_baseline
+suspect_hdr = {
+    "from": "service@sbi.co.in",
+    "return_path": "bounces@untrusted-relay.com",
+    "dkim_domain": "sendgrid.net",
+    "spf": "Fail",
+    "dkim": "Pass",
+    "dmarc": "Fail",
+    "first_hop": "smtp.sendgrid.net"
+}
+diff_out = compare_headers_against_baseline(suspect_hdr, "sbi.co.in")
+print("Baseline Brand:", diff_out["baseline_brand"])
+print("Verdict:", diff_out["verdict"])
+print("Forgeries Detected:", diff_out["forgery_count"])
+assert diff_out["forgery_count"] >= 2
+assert "CRITICAL SPOOFING" in diff_out["verdict"]
+
+print("\n--- TEST 13: I4C / NCRP Complaint Packager & Section 65B PDF ---")
+from core.ncrp_packager import generate_ncrp_complaint_text, generate_ncrp_pdf_annexure
+ncrp_case = {
+    "case_id": "CASE-NCRP-TEST",
+    "timestamp": "2026-09-12 10:00:00 UTC",
+    "sender": "billing@fake-discom.in",
+    "subject": "Power Disconnection Notice",
+    "originating_ip": "49.207.200.1",
+    "sha256": "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
+    "body_text": "Pay immediately via UPI: payment@okhdfcbank or IFSC: SBIN0001234 A/C: 987654321098",
+    "geolocation": {"org": "Reliance Jio Infocomm", "city": "Bengaluru", "country": "India"},
+    "investigator": "Cyber Cell Officer"
+}
+ncrp_txt = generate_ncrp_complaint_text(ncrp_case)
+assert "NATIONAL CYBER CRIME REPORTING PORTAL" in ncrp_txt
+assert "payment@okhdfcbank" in ncrp_txt
+ncrp_pdf = "data/reports/test_ncrp_pack.pdf"
+generate_ncrp_pdf_annexure(ncrp_case, ncrp_pdf)
+assert os.path.exists(ncrp_pdf)
+print(f"NCRP PDF Annexure created successfully: {ncrp_pdf} ({os.path.getsize(ncrp_pdf)} bytes)")
+
+print("\n>>> ALL 13 FORENSIC TESTS COMPLETED AND PASSED 100%! <<<")
+
 

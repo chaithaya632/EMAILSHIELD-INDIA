@@ -36,6 +36,11 @@ from core.session_vault import (
     forget_account,
     clear_session_credentials
 )
+from core.indian_banking import extract_indian_financial_indicators
+from core.quishing import scan_for_quishing
+from core.eml_sanitizer import sanitize_eml_content
+from core.header_diff import compare_headers_against_baseline, BRAND_BASELINES
+from core.ncrp_packager import generate_ncrp_complaint_text, generate_ncrp_pdf_annexure
 import plotly.express as px
 
 st.set_page_config(page_title="EMAILSHIELD INDIA", layout="wide")
@@ -585,6 +590,36 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
         ai_briefing = agent_out["briefing"]
         agent_trace = agent_out["agent_steps"]
         
+        # 5b. Advanced Forensic Scans: Quishing & Indian Banking Routes
+        quishing_findings = scan_for_quishing(
+            parsed_data.get("attachments", []),
+            html_body=parsed_data.get("body_html", "")
+        )
+        if quishing_findings:
+            reasons.append(f"🚨 QR Code Phishing ('Quishing') detected ({len(quishing_findings)} weaponized QR code(s) decoded)")
+            rule_findings.append(RuleFinding(
+                rule_name="Quishing_QR_Detector",
+                description=f"Decoded {len(quishing_findings)} hidden target URL(s) from embedded QR images.",
+                severity="HIGH",
+                evidence=[q["decoded_url"] for q in quishing_findings]
+            ))
+
+        full_email_body = (parsed_data.get("body_text", "") or "") + " " + (parsed_data.get("body_html", "") or "")
+        indian_banking_iocs = extract_indian_financial_indicators(full_email_body)
+        if indian_banking_iocs["has_indian_financial_iocs"]:
+            if indian_banking_iocs["upi_handles"]:
+                reasons.append(f"💸 Extracted {len(indian_banking_iocs['upi_handles'])} Indian UPI Payment VPA(s)")
+                for upi in indian_banking_iocs["upi_handles"]:
+                    indicators.append(Indicator(type="UPI_VPA", value=upi, source="Email Body"))
+            if indian_banking_iocs["ifsc_codes"]:
+                for ifsc_info in indian_banking_iocs["identified_banks"]:
+                    indicators.append(Indicator(type="IFSC_Bank", value=f"{ifsc_info['ifsc']} ({ifsc_info['bank_name']})", source="Email Body"))
+            if indian_banking_iocs["bank_accounts"]:
+                for acct in indian_banking_iocs["bank_accounts"]:
+                    indicators.append(Indicator(type="Bank_Account", value=acct, source="Email Body"))
+            if indian_banking_iocs["financial_lures"]:
+                reasons.append(f"⚠️ Indian Cyber Financial Lure: {', '.join(indian_banking_iocs['financial_lures'])}")
+
         # 6. Timeline Extraction
         timeline_events = []
         for idx, rec in enumerate(parsed_data.get("received_chain", [])):
@@ -681,9 +716,10 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
         st.success(f"Analysis Complete: {case_id} — SHA-256: {parsed_data['sha256'][:16]}...")
         
         # Render Dashboard
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "Overview", "Evidence & Auth", "IOCs & Threat Intel", "Detection & Rules",
-            "Relay Timeline & Delays", "Investigation Graph & Campaigns", "Reports & Case Management"
+            "Relay Timeline & Delays", "Investigation Graph & Campaigns", "Reports & Case Management",
+            "⚖️ Forensic Header Diff"
         ])
         
         with tab1:
@@ -729,6 +765,22 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                         with col_action:
                             st.markdown("#### 🛡️ What You Should Do:")
                             st.info(u.recommended_action)
+                st.markdown("---")
+
+            # Quishing (QR Code Phishing) Threat Card
+            if quishing_findings:
+                st.error("🚨 **QR CODE PHISHING ('QUISHING') ATTACK DETECTED**")
+                for q in quishing_findings:
+                    with st.expander(f"📱 Quishing Vector: {q['source']} ({q['threat_level']} Risk)", expanded=True):
+                        st.markdown(f"🖼️ **Carrier Image:** `{q['filename']}`")
+                        st.markdown(f"🔗 **Decoded Target URL (Defanged):** `{q['defanged_url']}`")
+                        q_col1, q_col2 = st.columns(2)
+                        with q_col1:
+                            st.markdown("#### 💥 What This QR Code May Cause:")
+                            st.warning(q["what_it_causes"])
+                        with q_col2:
+                            st.markdown("#### 🛡️ What You Should Do:")
+                            st.info(q["what_to_do"])
                 st.markdown("---")
 
             if case_report.ai_reasoning:
@@ -870,6 +922,38 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                 st.dataframe([i.model_dump() for i in indicators], use_container_width=True)
             else:
                 st.write("No indicators found.")
+
+            # Indian Financial Routes & Extortion Indicators
+            st.markdown("---")
+            st.subheader("🇮🇳 Indian Cyber Financial Intelligence (UPI & Banking Routes)")
+            if indian_banking_iocs["has_indian_financial_iocs"]:
+                st.warning("⚠️ **Active Indian Financial Artifacts & Extortion Vectors Extracted**")
+                
+                f_c1, f_c2 = st.columns(2)
+                with f_c1:
+                    st.markdown("#### 💸 Suspect UPI Handles (VPAs)")
+                    if indian_banking_iocs["upi_handles"]:
+                        for upi in indian_banking_iocs["upi_handles"]:
+                            st.code(upi, language="text")
+                    else:
+                        st.write("No UPI VPAs detected.")
+                        
+                with f_c2:
+                    st.markdown("#### 🏦 Banking Routes & Accounts")
+                    if indian_banking_iocs["bank_accounts"] or indian_banking_iocs["identified_banks"]:
+                        for acct in indian_banking_iocs["bank_accounts"]:
+                            st.markdown(f"• **A/C No:** `{acct}`")
+                        for b in indian_banking_iocs["identified_banks"]:
+                            st.markdown(f"• **IFSC:** ` {b['ifsc']} ` → **{b['bank_name']}**")
+                    else:
+                        st.write("No direct bank accounts detected.")
+                        
+                if indian_banking_iocs["financial_lures"]:
+                    st.markdown("#### 🚨 Detected Indian Threat Lures")
+                    for lure in indian_banking_iocs["financial_lures"]:
+                        st.error(f"⚠️ {lure}")
+            else:
+                st.success("✅ No Indian banking, UPI handles, or extortion lures detected in email body.")
             
             st.markdown("---")
             st.subheader("🔗 Background Check on Embedded Links (URL Threat Deep Dive)")
@@ -1039,4 +1123,90 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             with col_d2:
                 with open(json_path, "rb") as f:
                     st.download_button("⚡ Download Full Forensic JSON", f, file_name=f"{case_id}.json", mime="application/json", use_container_width=True)
+
+            # Indian Cybercrime (I4C / NCRP) Formal Complaint Packager
+            st.markdown("---")
+            st.subheader("🇮🇳 Indian Cybercrime (I4C / NCRP) Formal Complaint Packager")
+            st.caption("Official law enforcement reporting structure ready for submission to cybercrime.gov.in:")
+            
+            ncrp_text = generate_ncrp_complaint_text(updated_case_dict)
+            st.text_area("NCRP Portal Complaint Draft (Copy & Paste ready for cybercrime.gov.in):", value=ncrp_text, height=180)
+            
+            ncrp_pdf_path = f"data/reports/NCRP_{case_id}.pdf"
+            generate_ncrp_pdf_annexure(updated_case_dict, ncrp_pdf_path)
+            
+            col_pkg1, col_pkg2 = st.columns(2)
+            with col_pkg1:
+                with open(ncrp_pdf_path, "rb") as nf:
+                    st.download_button(
+                        "🇮🇳 Download Official NCRP Evidence Annexure (PDF)",
+                        nf,
+                        file_name=f"I4C_NCRP_Annexure_{case_id}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+            with col_pkg2:
+                sanitized_eml_bytes, def_cnt, quar_cnt = sanitize_eml_content(bytes_data)
+                st.download_button(
+                    f"🛡️ Download Sanitized / Defanged EML ({def_cnt} URLs defanged, {quar_cnt} files quarantined)",
+                    sanitized_eml_bytes,
+                    file_name=f"{case_id}_sanitized_evidence.eml",
+                    mime="message/rfc822",
+                    use_container_width=True,
+                    help="Safe shareable evidence copy: all URLs neutralized to hxxps and weaponized attachments quarantined to forensic warning placeholders."
+                )
+
+        with tab8:
+            st.subheader("⚖️ Forensic Header Diff & Baseline Comparator")
+            st.caption("Compares suspect email headers against verified legitimate enterprise brand baselines to uncover forged relays, mismatched envelope senders, and spoofed authentication:")
+            
+            brand_options = ["Auto-Detect from Sender"] + [f"{info['brand_name']} ({dom})" for dom, info in BRAND_BASELINES.items()]
+            chosen_brand_option = st.selectbox("Select Baseline Reference:", brand_options, index=0)
+            
+            target_baseline_domain = None
+            if chosen_brand_option != "Auto-Detect from Sender":
+                target_baseline_domain = chosen_brand_option.split("(")[-1].strip(")")
+                
+            suspect_header_payload = {
+                "from": str(headers.get("from", "")),
+                "sender_name": case_report.sender,
+                "return_path": str(headers.get("return-path", "")),
+                "dkim_domain": str(agent_out.get("auth_alignment", {}).get("dkim_domain", "")),
+                "spf": str(agent_out.get("auth_alignment", {}).get("spf_result", "None")),
+                "dkim": str(agent_out.get("auth_alignment", {}).get("dkim_result", "None")),
+                "dmarc": str(agent_out.get("auth_alignment", {}).get("dmarc_result", "None")),
+                "first_hop": parsed_data.get("received_chain", [""])[0] if parsed_data.get("received_chain") else ""
+            }
+            
+            diff_results = compare_headers_against_baseline(suspect_header_payload, target_baseline_domain)
+            
+            diff_col1, diff_col2, diff_col3 = st.columns([2, 1, 1])
+            with diff_col1:
+                st.markdown(f"#### Reference Baseline: **{diff_results['baseline_brand']}**")
+                if "CRITICAL SPOOFING" in diff_results["verdict"]:
+                    st.error(f"🚨 **{diff_results['verdict']}**")
+                elif "SUSPICIOUS" in diff_results["verdict"]:
+                    st.warning(f"⚠️ **{diff_results['verdict']}**")
+                else:
+                    st.success(f"✅ **{diff_results['verdict']}**")
+            with diff_col2:
+                st.metric("Forgeries Detected", diff_results["forgery_count"])
+            with diff_col3:
+                st.metric("Anomalies", diff_results["anomaly_count"])
+                
+            st.markdown("---")
+            st.markdown("#### Detailed Header Discrepancy Matrix")
+            
+            checkpoint_rows = []
+            for cp in diff_results["checkpoints"]:
+                status_icon = "✅ MATCH" if cp["status"] == "MATCH" else ("🚨 FORGERY" if cp["status"] == "FORGERY_DETECTED" else "⚠️ ANOMALY")
+                checkpoint_rows.append({
+                    "Forensic Checkpoint": cp["checkpoint"],
+                    "Legitimate Baseline": cp["legitimate_norm"],
+                    "Suspect Actual": cp["suspect_actual"],
+                    "Verdict": status_icon,
+                    "Forensic Finding": cp["finding"]
+                })
+            st.dataframe(checkpoint_rows, use_container_width=True)
+
 
