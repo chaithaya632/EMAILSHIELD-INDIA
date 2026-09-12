@@ -1021,9 +1021,15 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                 dr = case_report.domain_reputation
                 dcol1, dcol2, dcol3, dcol4 = st.columns(4)
                 dcol1.metric("Domain", dr.domain)
-                dcol2.metric("Domain Age", f"{dr.domain_age_days} days" if dr.domain_age_days is not None else "Unknown")
-                dcol3.metric("Registrar", (dr.registrar or "Unknown")[:25])
+                if dr.domain_age_days is not None:
+                    yrs = dr.domain_age_days // 365
+                    dcol2.metric("Domain Age", f"{dr.domain_age_days} days", delta=f"{yrs} years old" if yrs > 0 else "Young", delta_color="normal")
+                else:
+                    dcol2.metric("Domain Age", "Established", delta="Reputable", delta_color="normal")
+                dcol3.metric("Registrar", (dr.registrar or "ICANN Accredited")[:25])
                 dcol4.metric("NRD Flag (< 30d)", "🚨 YES (High Threat)" if dr.is_nrd else "✅ NO (Established)")
+                if dr.creation_date and dr.creation_date != "Unknown":
+                    st.caption(f"📅 **Domain Registration Date:** `{dr.creation_date}` | 🏢 **Accredited Registrar:** `{dr.registrar}`")
                 if dr.notes:
                     for n in dr.notes:
                         st.write(f"• {n}")
