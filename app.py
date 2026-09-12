@@ -42,6 +42,7 @@ from core.eml_sanitizer import sanitize_eml_content
 from core.header_diff import compare_headers_against_baseline, BRAND_BASELINES
 from core.ncrp_packager import generate_ncrp_complaint_text, generate_ncrp_pdf_annexure
 import plotly.express as px
+from core.sentinel import sentinel_manager, send_test_alert
 
 st.set_page_config(page_title="EMAILSHIELD INDIA", layout="wide")
 
@@ -425,7 +426,11 @@ if st.session_state.get("mailbox_connected", False):
 # Sidebar Navigation
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛡️ Platform Modes")
-nav_options = ["🔍 Single Case Investigation", "📊 Today's Mailbox Analytics"]
+nav_options = [
+    "🔍 Single Case Investigation",
+    "📊 Today's Mailbox Analytics",
+    "📡 Live Mailbox Sentinel (50s Auto-Defense)"
+]
 current_idx = min(st.session_state.get("active_view_idx", 0), len(nav_options) - 1)
 selected_nav = st.sidebar.radio("Active View:", nav_options, index=current_idx)
 
@@ -472,6 +477,175 @@ if selected_nav == "📊 Today's Mailbox Analytics":
             st.dataframe(batch_data["flagged_emails"], use_container_width=True)
     else:
         st.info("No batch scan results available yet. Click 'Scan Today's Emails (Batch)' in the sidebar to run a scan!")
+
+# View 2: Live Mailbox Sentinel
+elif selected_nav == "📡 Live Mailbox Sentinel (50s Auto-Defense)":
+    st.header("📡 Live Mailbox Sentinel (50s Auto-Defense)")
+    st.markdown(
+        "**Autonomous continuous mailbox monitoring:** Keeps track of the last analyzed email checkpoint, "
+        "detects newly arriving emails every 50 seconds, runs deep multi-tier forensic inspection, "
+        "and dispatches instant mobile alerts via WhatsApp and Telegram when threats are uncovered."
+    )
+
+    is_connected = st.session_state.get("mailbox_connected", False)
+    m_type = st.session_state.get("mailbox_type", "IMAP")
+    creds = st.session_state.get("mailbox_creds", {})
+
+    state_dict = sentinel_manager.get_state_summary()
+    is_active = state_dict["is_running"]
+
+    # Top Status Bar
+    if is_active:
+        st.success(
+            f"🟢 **LIVE SHIELD ACTIVE** — Polling `{creds.get('email', 'Mailbox')}` every "
+            f"**{state_dict['poll_interval']}s**. Next checkpoint check in **{state_dict['next_check_countdown']}s**."
+        )
+    else:
+        st.info("⚪ **LIVE SHIELD STANDBY** — Configure alert credentials below and click 'Start Live Protection'.")
+
+    # High-level Metrics Row
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Sentinel Status", "🟢 Active" if is_active else "⚪ Standby")
+    m2.metric("Total Analyzed", state_dict["total_scanned"])
+    m3.metric("Phishing Blocked", state_dict["phishing_count"])
+    m4.metric("Mobile Alerts Sent", state_dict["alerts_sent"])
+
+    st.markdown("---")
+
+    col_ctrl, col_notify = st.columns([1, 1])
+
+    with col_ctrl:
+        st.subheader("🛡️ Sentinel Control Center")
+        if not is_connected:
+            st.warning("⚠️ No mailbox connected. Please connect your Gmail, Outlook, Yahoo, or IMAP account using the sidebar to enable Live Sentinel.")
+        else:
+            st.write(f"**Connected Mailbox:** `{creds.get('email')}` ({m_type})")
+
+            # Checkpoint Info Card
+            st.markdown(
+                f"""
+<div style="background-color: #1e293b; border-left: 4px solid #38bdf8; padding: 12px; border-radius: 6px; margin-bottom: 15px;">
+<div style="font-size: 0.8em; color: #94a3b8; font-weight: 600; text-transform: uppercase;">Last Analyzed Checkpoint</div>
+<div style="font-size: 1.05em; font-weight: 700; color: #f8fafc; margin-top: 4px;">{state_dict['checkpoint_subject'][:50]}</div>
+<div style="font-size: 0.85em; color: #cbd5e1; margin-top: 4px;"><b>Sender:</b> {state_dict['checkpoint_sender'][:40]}</div>
+<div style="font-size: 0.8em; color: #64748b; margin-top: 4px;"><b>Time:</b> {state_dict['checkpoint_date']} | <b>Last Check:</b> {state_dict['last_checked_time']}</div>
+</div>
+""",
+                unsafe_allow_html=True
+            )
+
+            poll_sec = st.slider("Polling Frequency (seconds):", min_value=30, max_value=120, value=50, step=10, key="sentinel_poll_slider")
+
+            c_btn1, c_btn2 = st.columns(2)
+            with c_btn1:
+                if not is_active:
+                    if st.button("🟢 Start Live Protection", type="primary", use_container_width=True, key="btn_start_sentinel"):
+                        alert_cfg = {
+                            "whatsapp_enabled": st.session_state.get("sentinel_wa_enabled", False),
+                            "whatsapp_phone": st.session_state.get("sentinel_wa_phone", ""),
+                            "whatsapp_apikey": st.session_state.get("sentinel_wa_key", ""),
+                            "telegram_enabled": st.session_state.get("sentinel_tg_enabled", False),
+                            "telegram_token": st.session_state.get("sentinel_tg_token", ""),
+                            "telegram_chat_id": st.session_state.get("sentinel_tg_cid", "")
+                        }
+                        ok, msg = sentinel_manager.start(
+                            mailbox_type=m_type,
+                            mailbox_creds=creds,
+                            alert_config=alert_cfg,
+                            ml_classifier=ml_classifier,
+                            poll_interval=poll_sec
+                        )
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                else:
+                    if st.button("🔴 Stop Live Protection", use_container_width=True, key="btn_stop_sentinel"):
+                        ok, msg = sentinel_manager.stop()
+                        st.warning(msg)
+                        st.rerun()
+            with c_btn2:
+                if st.button("🔄 Refresh Status", use_container_width=True, key="btn_refresh_sentinel"):
+                    st.rerun()
+
+    with col_notify:
+        st.subheader("📱 Mobile Threat Alerts (Free)")
+        st.caption("Receive instant notifications directly on your phone when HIGH / MALICIOUS risks are detected.")
+
+        # WhatsApp Setup
+        wa_enabled = st.checkbox("💬 Enable WhatsApp Alerts (CallMeBot API - ₹0 Free)", value=st.session_state.get("sentinel_wa_enabled", False), key="sentinel_wa_enabled")
+        if wa_enabled:
+            wa_phone = st.text_input("WhatsApp Phone (+country code):", value=st.session_state.get("sentinel_wa_phone", ""), placeholder="+919876543210", key="sentinel_wa_phone")
+            wa_key = st.text_input("CallMeBot API Key:", value=st.session_state.get("sentinel_wa_key", ""), type="password", placeholder="e.g. 123456", key="sentinel_wa_key")
+            st.caption("💡 **Free CallMeBot Setup (30s)**: Send `I allow callmebot to send me messages` to `+34 941 87 23 20` on WhatsApp to get your key.")
+            
+            if st.button("🧪 Send Test WhatsApp Alert", key="btn_test_wa"):
+                if not wa_phone or not wa_key:
+                    st.error("Please enter your phone number and CallMeBot API key first.")
+                else:
+                    with st.spinner("Sending test ping to WhatsApp..."):
+                        t_ok, t_msg = send_test_alert("whatsapp", {"whatsapp_phone": wa_phone, "whatsapp_apikey": wa_key})
+                    if t_ok:
+                        st.success("✅ WhatsApp test message delivered! Check your phone.")
+                    else:
+                        st.error(f"Dispatch failed: {t_msg}")
+
+        # Telegram Setup
+        st.markdown("---")
+        tg_enabled = st.checkbox("✈️ Enable Telegram Alerts (Telegram Bot - ₹0 Free)", value=st.session_state.get("sentinel_tg_enabled", False), key="sentinel_tg_enabled")
+        if tg_enabled:
+            tg_token = st.text_input("Telegram Bot Token:", value=st.session_state.get("sentinel_tg_token", ""), type="password", placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ", key="sentinel_tg_token")
+            tg_cid = st.text_input("Telegram Chat ID:", value=st.session_state.get("sentinel_tg_cid", ""), placeholder="e.g. 987654321", key="sentinel_tg_cid")
+            st.caption("💡 **Free Telegram Setup**: Message `@BotFather` and send `/newbot` to get your token. Get your Chat ID from `@userinfobot`.")
+            
+            if st.button("🧪 Send Test Telegram Alert", key="btn_test_tg"):
+                if not tg_token or not tg_cid:
+                    st.error("Please enter both your Bot Token and Chat ID first.")
+                else:
+                    with st.spinner("Sending test ping to Telegram..."):
+                        t_ok, t_msg = send_test_alert("telegram", {"telegram_token": tg_token, "telegram_chat_id": tg_cid})
+                    if t_ok:
+                        st.success("✅ Telegram test message delivered! Check your phone.")
+                    else:
+                        st.error(f"Dispatch failed: {t_msg}")
+
+    # Inbound Activity Stream & Audit Log
+    st.markdown("---")
+    st.subheader("📋 Inbound Activity Stream & Threat Audit Log")
+
+    recent_act = state_dict.get("recent_activity", [])
+    if recent_act:
+        formatted_table = []
+        for a in recent_act:
+            v_badge = "🟢 SAFE"
+            if a["verdict"] == "HIGH":
+                v_badge = "🔴 HIGH RISK"
+            elif a["verdict"] == "SUSPICIOUS":
+                v_badge = "🟡 SUSPICIOUS"
+            
+            alert_str = "—"
+            if a.get("alert_sent"):
+                alert_str = f"🔔 Sent ({a.get('alert_channel', '')})"
+            elif a.get("verdict") == "HIGH":
+                alert_str = "⚠️ Failed / Disabled"
+
+            formatted_table.append({
+                "Time": a["timestamp"],
+                "Verdict": v_badge,
+                "Threat Score": f"{a['score']}/100",
+                "Sender": a["sender"][:30],
+                "Subject": a["subject"][:40],
+                "Mobile Alert": alert_str
+            })
+        st.dataframe(formatted_table, use_container_width=True)
+    else:
+        st.info("No new emails evaluated during this session yet. As incoming mail arrives, each item will appear here with its threat score and alert delivery status.")
+
+    if state_dict.get("error_log"):
+        with st.expander("⚠️ Sentinel Warning / Diagnostics Log"):
+            for err in state_dict["error_log"]:
+                st.code(err)
 
 # View 3: Single Case Investigation
 elif selected_nav == "🔍 Single Case Investigation":

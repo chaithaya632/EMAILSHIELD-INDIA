@@ -112,7 +112,7 @@ def fetch_imap_emails(
             # Single ultra-fast range fetch: e.g. "951:1000" in 1 roundtrip
             range_str = f"{first_id}:{last_id}"
             try:
-                res, data = mail.fetch(range_str, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])')
+                res, data = mail.fetch(range_str, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])')
                 if res == "OK" and data:
                     _parse_fetch_items(data, results_map)
             except Exception:
@@ -124,7 +124,7 @@ def fetch_imap_emails(
                 chunk = target_ids[i:i + chunk_size]
                 try:
                     chunk_set = b','.join(chunk)
-                    res, data = mail.fetch(chunk_set, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])')
+                    res, data = mail.fetch(chunk_set, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])')
                     if res == "OK" and data:
                         _parse_fetch_items(data, results_map)
                 except Exception:
@@ -161,9 +161,11 @@ def _parse_fetch_items(data: list, out_map: Dict[str, Dict[str, str]]) -> None:
                 subject = str(msg_obj.get("Subject", "No Subject")).strip() or "No Subject"
                 sender = str(msg_obj.get("From", "Unknown Sender")).strip() or "Unknown Sender"
                 date_val = str(msg_obj.get("Date", "Unknown Date")).strip() or "Unknown Date"
+                message_id = str(msg_obj.get("Message-ID", "")).strip() or mid_str
 
                 out_map[mid_str] = {
                     "id": mid_str,
+                    "message_id": message_id,
                     "snippet": subject[:60],
                     "subject": subject,
                     "sender": sender,

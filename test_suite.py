@@ -283,6 +283,58 @@ for tc in benign_test_cases:
     print(f"Benign Email: {tc['name']} -> Risk: {out['risk_score']} | Verdict: {out['bec_telemetry']['verdict']} (Confidence: {out['bec_telemetry']['confidence_pct']}%)")
     assert out["risk_score"] == "LOW", f"Expected LOW risk for {tc['name']}, got {out['risk_score']}"
 
-print("\n>>> ALL 14 FORENSIC TESTS COMPLETED AND PASSED 100%! <<<")
+print("\n--- TEST 15: Live Mailbox Sentinel Checkpointing & Mobile Alert Payloads ---")
+from core.sentinel import format_threat_alert_text, SentinelManager, send_test_alert
+
+# 1. Test Threat Alert Text Formatting
+sample_threat = {
+    "case_id": "CASE-TEST999",
+    "subject": "Urgent: Verify Your SBI NetBanking Credentials",
+    "sender": "support@sbi-bank-secure.online",
+    "risk_score": "HIGH",
+    "risk_score_numeric": 92,
+    "risk_reasons": ["Lookalike domain impersonating SBI Bank", "DMARC authentication failed", "Phishing link detected"]
+}
+alert_text = format_threat_alert_text(sample_threat)
+print("Alert Preview:\n", alert_text[:200], "...")
+assert "EMAILSHIELD CRITICAL SECURITY ALERT" in alert_text
+assert "support@sbi-bank-secure.online" in alert_text
+assert "92/100" in alert_text
+assert "DO NOT click any links" in alert_text
+
+# 2. Test Checkpointing & Unseen Email Detection Logic
+manager = SentinelManager()
+# Simulate inbox state
+mock_inbox = [
+    {"id": "105", "subject": "Brand New Inbound Attack", "sender": "hacker@evil.com", "date": "12-Sep-2026 16:30"},
+    {"id": "104", "subject": "Important Meeting Notes", "sender": "boss@company.com", "date": "12-Sep-2026 16:20"},
+    {"id": "103", "subject": "Last Analyzed Baseline Mail", "sender": "client@partner.in", "date": "12-Sep-2026 16:00"},
+    {"id": "102", "subject": "Old Archived Newsletter", "sender": "news@daily.com", "date": "12-Sep-2026 15:00"},
+]
+
+# Set checkpoint to message 103 (last analyzed)
+manager.state.checkpoint_id = "103"
+manager.state.checkpoint_subject = "Last Analyzed Baseline Mail"
+
+# Detect unseen emails
+unseen = manager._identify_unseen_emails(mock_inbox)
+print(f"Detected {len(unseen)} unseen email(s) newer than checkpoint 103:")
+for u in unseen:
+    print(f"  • ID {u['id']}: {u['subject']}")
+
+assert len(unseen) == 2
+assert unseen[0]["id"] == "105"
+assert unseen[1]["id"] == "104"
+
+# Advance checkpoint to top email (105)
+manager.state.checkpoint_id = "105"
+manager.state.checkpoint_subject = "Brand New Inbound Attack"
+
+# Test identical checkpoint (No new emails arrived)
+unseen_after = manager._identify_unseen_emails(mock_inbox)
+print(f"Subsequent check with checkpoint 105: {len(unseen_after)} new emails (Zero duplicates)")
+assert len(unseen_after) == 0
+
+print("\n>>> ALL 15 FORENSIC & SENTINEL TESTS COMPLETED AND PASSED 100%! <<<")
 
 
