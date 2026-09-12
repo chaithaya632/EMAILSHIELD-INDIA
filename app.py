@@ -757,94 +757,194 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
         ])
         
         with tab1:
-            col_verdict1, col_verdict2, col_verdict3 = st.columns([2, 1, 1])
-            with col_verdict1:
-                st.markdown(f"### 🎯 Threat Verdict: **{case_report.threat_verdict}**")
-                st.caption(f"Case ID: `{case_id}` | Source: `{case_report.ingestion_source}`")
-            with col_verdict2:
-                st.metric("Confidence", f"{case_report.verdict_confidence}%")
-            with col_verdict3:
-                st.metric("Risk Score", risk_score)
-
-            # BEC & Display-Name Spoofing Alert Card
-            if case_report.bec_telemetry and (case_report.bec_telemetry.is_display_name_spoof or case_report.bec_telemetry.is_financial_lure):
-                st.error("🚨 **BUSINESS EMAIL COMPROMISE (BEC) & IMPERSONATION ALERT**")
-                b_col1, b_col2 = st.columns(2)
-                with b_col1:
-                    if case_report.bec_telemetry.is_display_name_spoof:
-                        st.markdown(f"🎭 **Display Name Spoof:** `{case_report.bec_telemetry.display_name}`")
-                        st.markdown(f"✉️ **Actual Sender Address:** `{case_report.bec_telemetry.sender_email}`")
-                        st.warning("Adversary is masquerading as corporate executive using an unauthorized freemail address.")
-                with b_col2:
-                    if case_report.bec_telemetry.is_financial_lure:
-                        st.markdown("💸 **Financial / Wire Transfer Fraud Lures Detected:**")
-                        for f in case_report.bec_telemetry.flags:
-                            st.write(f"- {f}")
-                st.markdown("---")
-
-            # Suspicious Link Threat Alert & Action Guidance
             critical_or_high_urls = [u for u in case_report.url_analyses if u.risk_level in ["CRITICAL", "HIGH"]]
-            if critical_or_high_urls:
-                st.error("🚨 **SUSPICIOUS LINK(S) DETECTED IN THIS EMAIL**")
-                for u in critical_or_high_urls:
-                    with st.expander(f"⚠️ Link Threat: {u.threat_category} ({u.risk_level} Risk)", expanded=True):
-                        st.markdown(f"🔗 **Target URL (Defanged):** `{u.defanged_url}`")
-                        if u.redirect_count > 0:
-                            st.caption(f"↳ *Redirects through {u.redirect_count} hops to: `{u.final_destination}`*")
-                        
-                        col_cause, col_action = st.columns(2)
-                        with col_cause:
-                            st.markdown("#### 💥 What This Link May Cause:")
-                            st.warning(u.potential_impact)
-                        with col_action:
-                            st.markdown("#### 🛡️ What You Should Do:")
-                            st.info(u.recommended_action)
-                st.markdown("---")
+            has_bec = case_report.bec_telemetry and (case_report.bec_telemetry.is_display_name_spoof or case_report.bec_telemetry.is_financial_lure)
+            has_quishing = bool(quishing_findings)
+            has_high_rule = any(r.severity == "HIGH" for r in rule_findings)
+            
+            # Determine overall user-facing safety status
+            is_safe = (risk_score == "LOW") and not has_bec and not has_quishing and not critical_or_high_urls and not has_high_rule
 
-            # Quishing (QR Code Phishing) Threat Card
-            if quishing_findings:
-                st.error("🚨 **QR CODE PHISHING ('QUISHING') ATTACK DETECTED**")
-                for q in quishing_findings:
-                    with st.expander(f"📱 Quishing Vector: {q['source']} ({q['threat_level']} Risk)", expanded=True):
-                        st.markdown(f"🖼️ **Carrier Image:** `{q['filename']}`")
-                        st.markdown(f"🔗 **Decoded Target URL (Defanged):** `{q['defanged_url']}`")
-                        q_col1, q_col2 = st.columns(2)
-                        with q_col1:
-                            st.markdown("#### 💥 What This QR Code May Cause:")
-                            st.warning(q["what_it_causes"])
-                        with q_col2:
-                            st.markdown("#### 🛡️ What You Should Do:")
-                            st.info(q["what_to_do"])
-                st.markdown("---")
-
-            if case_report.ai_reasoning:
-                st.markdown(case_report.ai_reasoning)
-                st.markdown("---")
+            if is_safe:
+                # 🟢 PROMINENT USER-FRIENDLY "SAFE" HERO CARD
+                st.markdown(
+                    """
+<div style="background: linear-gradient(135deg, #064e3b 0%, #065f46 100%); border: 2px solid #10b981; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.15);">
+    <span style="background-color: #10b981; color: #022c22; font-weight: 800; font-size: 0.8em; padding: 4px 12px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px;">Verified Clean</span>
+    <h2 style="color: #ecfdf5; margin: 10px 0 6px 0; font-size: 1.6em;">🛡️ STATUS: THIS EMAIL IS SAFE TO OPEN</h2>
+    <p style="color: #a7f3d0; margin: 0; font-size: 0.95em;">
+        EMAILSHIELD analyzed this message. No signs of phishing, executive impersonation, malicious attachments, or spoofed senders were detected.
+    </p>
+</div>
+""",
+                    unsafe_allow_html=True
+                )
                 
-            # Autonomous AI Agent ReAct Trace
-            if case_report.agent_trace:
-                with st.expander(f"🤖 Autonomous AI Forensic Agent ({len(case_report.agent_trace)} Step ReAct Trail)", expanded=True):
-                    st.caption("The Autonomous AI Agent coordinated multi-source telemetry tools to reconstruct the adversary's attack chain:")
-                    for step in case_report.agent_trace:
-                        st.markdown(f"**Step {step.step_num}:** `{step.tool_used}`")
-                        st.markdown(f"💭 **Thought:** *{step.thought}*")
-                        st.markdown(f"🛠️ **Action:** `{step.action}`")
-                        st.markdown(f"👁️ **Observation:** {step.observation}")
+                col_safe1, col_safe2, col_safe3 = st.columns([2, 1, 1])
+                with col_safe1:
+                    st.markdown(f"**Classification:** `{case_report.threat_verdict}`")
+                    st.caption(f"Case ID: `{case_id}` | Source: `{case_report.ingestion_source}`")
+                with col_safe2:
+                    st.metric("Safety Confidence", f"{case_report.verdict_confidence}%")
+                with col_safe3:
+                    st.metric("Risk Level", "LOW", delta="SAFE", delta_color="normal")
+                    
+                st.markdown("---")
+                st.markdown("#### 📋 Plain-Language Safety Summary:")
+                st.success(
+                    "✅ **Authentic Sender:** The email originated from authorized mail servers with verified identity records.<br>"
+                    "✅ **Safe Hyperlinks:** No links redirect to password harvesting portals, tracking threats, or malware downloads.<br>"
+                    "✅ **No Fraudulent Lures:** No urgent wire transfer requests, digital arrest extortion, or fake payment demands.",
+                    unsafe_allow_html=True
+                )
+                
+                if case_report.forwarded_by:
+                    st.info(f"📬 **Forwarded for Verification by User:** `{case_report.forwarded_by}`")
+                
+                st.markdown("---")
+                # Easy User Toggle to view more details or keep it simple
+                view_technical_details = st.checkbox(
+                    "🔍 View Detailed Technical Forensics & AI Reasoning (Click to show/hide)",
+                    value=False,
+                    key="toggle_safe_details",
+                    help="Enable this if you want to inspect the AI ReAct reasoning steps, full briefing, cryptographic hashes, and server metrics."
+                )
+                
+                if view_technical_details:
+                    st.markdown("### 🔬 In-Depth Forensic Telemetry & AI Reasoning")
+                    if case_report.ai_reasoning:
+                        st.markdown(case_report.ai_reasoning)
                         st.markdown("---")
                         
-            st.write("### Detection Reasons")
-            for r in reasons:
-                st.write(f"- {r}")
-            if case_report.forwarded_by:
-                st.info(f"📬 **Forwarded for Verification by User:** `{case_report.forwarded_by}`")
-            
-            c_meta1, c_meta2, c_meta3 = st.columns(3)
-            with c_meta1:
-                st.metric("SHA-256", f"{parsed_data['sha256'][:16]}...", help=parsed_data['sha256'])
-            with c_meta2:
-                st.metric("Sender", case_report.sender[:25])
-            with c_meta3:
-                st.metric("Subject", case_report.subject[:25])
+                    if case_report.agent_trace:
+                        with st.expander(f"🤖 Autonomous AI Forensic Agent ({len(case_report.agent_trace)} Step ReAct Trail)", expanded=True):
+                            st.caption("The Autonomous AI Agent coordinated multi-source telemetry tools to verify this email:")
+                            for step in case_report.agent_trace:
+                                st.markdown(f"**Step {step.step_num}:** `{step.tool_used}`")
+                                st.markdown(f"💭 **Thought:** *{step.thought}*")
+                                st.markdown(f"🛠️ **Action:** `{step.action}`")
+                                st.markdown(f"👁️ **Observation:** {step.observation}")
+                                st.markdown("---")
+                                
+                    st.write("### Detection Reasons & Heuristics")
+                    for r in reasons:
+                        st.write(f"- {r}")
+                        
+                    c_meta1, c_meta2, c_meta3 = st.columns(3)
+                    with c_meta1:
+                        st.metric("SHA-256", f"{parsed_data['sha256'][:16]}...", help=parsed_data['sha256'])
+                    with c_meta2:
+                        st.metric("Sender", case_report.sender[:25])
+                    with c_meta3:
+                        st.metric("Subject", case_report.subject[:25])
+                else:
+                    st.caption("💡 *You are viewing the simple summary mode. Check the box above anytime if you want to inspect technical server hops, AI ReAct agent traces, and cryptographic hashes.*")
+
+            else:
+                # 🔴 PROMINENT USER-FRIENDLY "UNSAFE / DANGEROUS" HERO CARD
+                st.markdown(
+                    """
+<div style="background: linear-gradient(135deg, #7f1d1d 0%, #991b1b 100%); border: 2px solid #ef4444; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(239, 68, 68, 0.25);">
+    <span style="background-color: #ef4444; color: #450a0a; font-weight: 800; font-size: 0.8em; padding: 4px 12px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px;">🚨 Threat Detected</span>
+    <h2 style="color: #fff1f2; margin: 10px 0 6px 0; font-size: 1.6em;">⚠️ STATUS: THIS EMAIL IS UNSAFE / DANGEROUS</h2>
+    <p style="color: #fecaca; margin: 0; font-size: 0.95em;">
+        <b>Action Required:</b> Do NOT click links, do NOT download attachments, and do NOT send money or reply to this sender.
+    </p>
+</div>
+""",
+                    unsafe_allow_html=True
+                )
+                
+                col_verdict1, col_verdict2, col_verdict3 = st.columns([2, 1, 1])
+                with col_verdict1:
+                    st.markdown(f"### 🎯 Threat Verdict: **{case_report.threat_verdict}**")
+                    st.caption(f"Case ID: `{case_id}` | Source: `{case_report.ingestion_source}`")
+                with col_verdict2:
+                    st.metric("Confidence", f"{case_report.verdict_confidence}%")
+                with col_verdict3:
+                    st.metric("Risk Score", risk_score, delta="MALICIOUS" if risk_score == "HIGH" else "SUSPICIOUS", delta_color="inverse")
+
+                # BEC & Display-Name Spoofing Alert Card
+                if has_bec:
+                    st.error("🚨 **BUSINESS EMAIL COMPROMISE (BEC) & IMPERSONATION ALERT**")
+                    b_col1, b_col2 = st.columns(2)
+                    with b_col1:
+                        if case_report.bec_telemetry.is_display_name_spoof:
+                            st.markdown(f"🎭 **Display Name Spoof:** `{case_report.bec_telemetry.display_name}`")
+                            st.markdown(f"✉️ **Actual Sender Address:** `{case_report.bec_telemetry.sender_email}`")
+                            st.warning("Adversary is masquerading as corporate executive using an unauthorized freemail address.")
+                    with b_col2:
+                        if case_report.bec_telemetry.is_financial_lure:
+                            st.markdown("💸 **Financial / Wire Transfer Fraud Lures Detected:**")
+                            for f in case_report.bec_telemetry.flags:
+                                st.write(f"- {f}")
+                    st.markdown("---")
+
+                # Suspicious Link Threat Alert & Action Guidance
+                if critical_or_high_urls:
+                    st.error("🚨 **SUSPICIOUS LINK(S) DETECTED IN THIS EMAIL**")
+                    for u in critical_or_high_urls:
+                        with st.expander(f"⚠️ Link Threat: {u.threat_category} ({u.risk_level} Risk)", expanded=True):
+                            st.markdown(f"🔗 **Target URL (Defanged):** `{u.defanged_url}`")
+                            if u.redirect_count > 0:
+                                st.caption(f"↳ *Redirects through {u.redirect_count} hops to: `{u.final_destination}`*")
+                            
+                            col_cause, col_action = st.columns(2)
+                            with col_cause:
+                                st.markdown("#### 💥 What This Link May Cause:")
+                                st.warning(u.potential_impact)
+                            with col_action:
+                                st.markdown("#### 🛡️ What You Should Do:")
+                                st.info(u.recommended_action)
+                    st.markdown("---")
+
+                # Quishing (QR Code Phishing) Threat Card
+                if quishing_findings:
+                    st.error("🚨 **QR CODE PHISHING ('QUISHING') ATTACK DETECTED**")
+                    for q in quishing_findings:
+                        with st.expander(f"📱 Quishing Vector: {q['source']} ({q['threat_level']} Risk)", expanded=True):
+                            st.markdown(f"🖼️ **Carrier Image:** `{q['filename']}`")
+                            st.markdown(f"🔗 **Decoded Target URL (Defanged):** `{q['defanged_url']}`")
+                            q_col1, q_col2 = st.columns(2)
+                            with q_col1:
+                                st.markdown("#### 💥 What This QR Code May Cause:")
+                                st.warning(q["what_it_causes"])
+                            with q_col2:
+                                st.markdown("#### 🛡️ What You Should Do:")
+                                st.info(q["what_to_do"])
+                    st.markdown("---")
+
+                # Clear reasons why it is unsafe
+                st.markdown("#### 🚨 Why EMAILSHIELD Flagged This Email as Unsafe:")
+                for r in reasons:
+                    st.error(f"• {r}")
+                
+                if case_report.forwarded_by:
+                    st.info(f"📬 **Forwarded for Verification by User:** `{case_report.forwarded_by}`")
+
+                st.markdown("---")
+                # Expandable Deep Technical Forensics for Unsafe Emails
+                with st.expander("🔬 View In-Depth Technical Forensics & AI Reasoning Chain", expanded=False):
+                    if case_report.ai_reasoning:
+                        st.markdown(case_report.ai_reasoning)
+                        st.markdown("---")
+                        
+                    if case_report.agent_trace:
+                        st.caption("The Autonomous AI Agent coordinated multi-source telemetry tools to reconstruct the adversary's attack chain:")
+                        for step in case_report.agent_trace:
+                            st.markdown(f"**Step {step.step_num}:** `{step.tool_used}`")
+                            st.markdown(f"💭 **Thought:** *{step.thought}*")
+                            st.markdown(f"🛠️ **Action:** `{step.action}`")
+                            st.markdown(f"👁️ **Observation:** {step.observation}")
+                            st.markdown("---")
+                            
+                    c_meta1, c_meta2, c_meta3 = st.columns(3)
+                    with c_meta1:
+                        st.metric("SHA-256", f"{parsed_data['sha256'][:16]}...", help=parsed_data['sha256'])
+                    with c_meta2:
+                        st.metric("Sender", case_report.sender[:25])
+                    with c_meta3:
+                        st.metric("Subject", case_report.subject[:25])
             
         with tab2:
             st.subheader("🔐 Cryptographic Authentication & DMARC Alignment Matrix (RFC 7489)")
