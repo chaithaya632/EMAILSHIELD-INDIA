@@ -21,3 +21,4 @@ token.json
 .streamlit/secrets.toml
 data/.vault/
 *.enc
+*.zip

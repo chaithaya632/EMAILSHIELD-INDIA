@@ -349,7 +349,39 @@ assert "123456" not in masked_sample2
 assert "891245" not in masked_sample3
 assert masked_sample4 == "Weekend plans?"
 
-print("\n>>> ALL 15 FORENSIC & SENTINEL TESTS COMPLETED AND PASSED 100%! <<<")
+print("\n--- TEST 16: Real-World Corpus Stress, MIME Decoding & Anchor Defang Verification ---")
+import zipfile
+from core.risk import evaluate_rules, calculate_hybrid_risk
+with zipfile.ZipFile("email-corpus-main.zip", "r") as z:
+    eml_files = [n for n in z.namelist() if n.lower().endswith(".eml")]
+    # Test DHL Phishing sample from corpus (index 3)
+    dhl_raw = z.read(eml_files[3])
+    dhl_parsed = SecureEmailParser(dhl_raw).parse()
+    
+    # Verify MIME decoding
+    assert "DHXPR-ESS" in dhl_parsed["headers"].get("subject", "")
+    assert "MyDHL EXPRESS" in dhl_parsed["headers"].get("from", "")
+    
+    # Verify Defanged URL extraction and anchor spoofing
+    dhl_iocs = extract_all_indicators(dhl_parsed["body"] + " " + str(dhl_parsed["headers"]))
+    assert len(dhl_iocs["urls"]) >= 2
+    assert any("bgsexpress.com" in u for u in dhl_iocs["urls"])
+    assert len(dhl_iocs["anchor_spoofs"]) >= 1
+    assert dhl_iocs["anchor_spoofs"][0]["displayed_domain"] == "international.dhl.com"
+    assert dhl_iocs["anchor_spoofs"][0]["actual_domain"] == "www.bgsexpress.com"
+    
+    # Verify Detection
+    dhl_auth = evaluate_auth_and_alignment(dhl_parsed["headers"])
+    dhl_bec = detect_bec_and_impersonation(dhl_parsed["headers"], dhl_parsed["body"], auth_alignment=dhl_auth)
+    dhl_rules = evaluate_rules(dhl_parsed, auth_alignment=dhl_auth, bec_telemetry=dhl_bec)
+    dhl_risk, dhl_reasons = calculate_hybrid_risk(dhl_rules, 0.5, auth_alignment=dhl_auth)
+    
+    print(f"Corpus Sample 4 Hybrid Risk: {dhl_risk} | Findings: {len(dhl_rules)}")
+    print(f"Anchor Spoof Detected: {dhl_iocs['anchor_spoofs'][0]}")
+    assert dhl_risk == "HIGH"
+    assert any("RULE-019" in r.get("rule_id", "") or "Anchor" in r.get("finding", "") for r in dhl_rules)
+
+print("\n>>> ALL 16 FORENSIC, CORPUS & SENTINEL TESTS COMPLETED AND PASSED 100%! <<<")
 
 
 

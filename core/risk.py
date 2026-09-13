@@ -122,32 +122,83 @@ def evaluate_rules(
         if "dmarc=pass" in auth_res or ("spf=pass" in auth_res and "dkim=pass" in auth_res):
             auth_ok = True
 
-    # 3. Urgency language
-    urgency_keywords = ["urgent", "immediate action required", "account suspension", "verify your account", "overdue"]
+    subject_text = str(headers.get("subject", "")).lower()
+    full_text = f"{subject_text} {body}".lower()
+
+    # 3. Urgency language & Extortion Scareware
+    urgency_keywords = [
+        "urgent", "immediate action required", "account suspension", "verify your account",
+        "overdue", "final notice", "final warning", "account locked", "account blocked",
+        "account has been locked", "account has been blocked", "action required",
+        "will be deleted", "will be removed today", "backup halted", "storage full",
+        "space full", "payment failed", "payment declined", "reschedule",
+        "delivery status notification", "schedule confirmation", "claim your", "2nd attempt"
+    ]
     for kw in urgency_keywords:
-        if kw in body:
-            is_suspension = ("suspension" in body or "verify your account" in body)
+        if kw in full_text:
+            is_suspension = any(s in full_text for s in ["suspension", "verify your account", "locked", "blocked", "deleted"])
             findings.append({
                 "rule_id": "RULE-007",
-                "finding": "Urgency language detected",
+                "finding": "Urgency / Threat language detected",
                 "evidence": f"Keyword found: '{kw}'",
-                "severity": "MEDIUM" if (not auth_ok or is_suspension) else "LOW",
-                "explanation": "Body contains language intended to create urgency or accelerate recipient response."
+                "severity": "HIGH" if (not auth_ok and is_suspension) else ("MEDIUM" if not auth_ok else "LOW"),
+                "explanation": "Subject or body contains language intended to create urgency, panic, or accelerated victim response."
             })
             break # Only fire once
 
-    # 4. Credential request
-    cred_keywords = ["password", "login", "credentials", "click here to verify", "update your billing"]
+    # 4. Credential & Billing Update requests
+    cred_keywords = [
+        "password", "login", "credentials", "click here to verify", "update your billing",
+        "update your payment", "payment failed", "payment declined", "update your walmart",
+        "renew your subscription", "confirm the payment", "verify your login"
+    ]
     for kw in cred_keywords:
-        if kw in body:
+        if kw in full_text:
             findings.append({
                 "rule_id": "RULE-006",
-                "finding": "Credential/Action request",
+                "finding": "Credential / Payment Action request",
                 "evidence": f"Keyword found: '{kw}'",
                 "severity": "MEDIUM" if not auth_ok else "LOW",
-                "explanation": "Body contains language referencing account login, credentials, or portal verification."
+                "explanation": "Message references account login, credential verification, or urgent billing update."
             })
             break
+
+    # 4b. Cloud Storage Deletion / Extortion Scareware
+    extortion_patterns = [
+        r"photos (?:and|&) videos will be deleted",
+        r"cloud (?:space|storage) (?:is )?full",
+        r"backup halted",
+        r"cloud files will be (?:removed|deleted)",
+        r"your storage is (?:almost )?full",
+        r"all storage used"
+    ]
+    is_official_cloud = any(f"@{dom}" in from_header.lower() for dom in ["google.com", "microsoft.com", "apple.com", "icloud.com", "dropbox.com"])
+    if not is_official_cloud:
+        for ep in extortion_patterns:
+            if re.search(ep, full_text):
+                findings.append({
+                    "rule_id": "RULE-020",
+                    "finding": "Cloud Storage Extortion / Scareware Lure",
+                    "evidence": f"Scareware pattern matched: '{ep}'",
+                    "severity": "HIGH",
+                    "explanation": "Email exploits artificial urgency regarding data loss or photo deletion to solicit payment or credentials."
+                })
+                break
+
+    # 4c. Deceptive Brand Subdomain / Combo-Squatting in Sender Domain
+    from core.domain_reputation import OFFICIAL_BRAND_DOMAINS
+    raw_from_dom = extract_email(from_header).split("@")[-1].lower() if "@" in extract_email(from_header) else ""
+    if not auth_ok and raw_from_dom:
+        for mb, legit_doms in OFFICIAL_BRAND_DOMAINS.items():
+            if mb in raw_from_dom and not any(raw_from_dom == ld or raw_from_dom.endswith("." + ld) for ld in legit_doms):
+                findings.append({
+                    "rule_id": "RULE-021",
+                    "finding": f"Deceptive Brand Subdomain Spoofing ({mb.upper()})",
+                    "evidence": f"Sender domain '{raw_from_dom}' inserts brand '{mb}' into unauthorized host",
+                    "severity": "HIGH",
+                    "explanation": "Adversary embeds a trusted commercial brand name as a deceptive subdomain or prefix on an unrelated server."
+                })
+                break
 
     # 5. Attachment metadata anomaly
     attachments = parsed_email.get("attachments", [])
@@ -293,6 +344,18 @@ def evaluate_rules(
                 "severity": "HIGH" if is_negative else "MEDIUM",
                 "explanation": "Relay hop transit timestamps show clock distortion or forged Received headers inserted by an attacker."
             })
+
+    # 13. Hyperlink Anchor Text Spoofing
+    from core.indicators import extract_anchor_spoofs
+    anchor_spoofs = extract_anchor_spoofs(parsed_email.get("body", ""))
+    for sp in anchor_spoofs:
+        findings.append({
+            "rule_id": "RULE-019",
+            "finding": f"Hyperlink Anchor Spoof ({sp.get('displayed_domain')})",
+            "evidence": f"Displayed domain: '{sp.get('displayed_domain')}' | Actual destination: '{sp.get('actual_destination')[:55]}...'",
+            "severity": "HIGH",
+            "explanation": "Adversary masked an external target address using a false visible brand domain."
+        })
 
     return findings
 

@@ -160,7 +160,7 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
         effective_dmarc = "FAIL"
         dmarc_reason = "Authentication-Results header records explicit DMARC failure."
         threat_detected = True
-    elif (spf_result == "pass" or dkim_result == "pass") and (is_bulk_newsletter or is_esp_delegated):
+    elif (spf_result == "pass" or dkim_result == "pass") and is_esp_delegated:
         # Legitimate newsletter or creator update sent via authorized third-party ESP
         effective_dmarc = "PASS (Delegated ESP)"
         dmarc_reason = f"Authorized bulk email/newsletter delivery via Email Service Provider ('{dkim_signing_domain or envelope_from_domain}')."

@@ -44,6 +44,44 @@ CONFIDENTIALITY_SECRECY_PATTERNS = [
     r"\burge you not to discuss\b"
 ]
 
+KNOWN_SPOOFED_ENTITIES = {
+    "dhl": ["dhl.com", "dhl.de"],
+    "ups": ["ups.com"],
+    "fedex": ["fedex.com"],
+    "usps": ["usps.com", "usps.gov"],
+    "singpost": ["singpost.com"],
+    "singapore-post": ["singpost.com"],
+    "singapore post": ["singpost.com"],
+    "starhub": ["starhub.com"],
+    "singtel": ["singtel.com"],
+    "paypal": ["paypal.com"],
+    "microsoft": ["microsoft.com", "office.com"],
+    "office365": ["microsoft.com", "office.com"],
+    "google": ["google.com", "google.co.in", "gmail.com"],
+    "apple": ["apple.com", "icloud.com"],
+    "amazon": ["amazon.com", "amazon.in", "amazon.co.uk", "amazon.de"],
+    "netflix": ["netflix.com"],
+    "sbi": ["sbi.co.in", "sbicard.com"],
+    "hdfc": ["hdfcbank.com", "hdfcbank.net"],
+    "icici": ["icicibank.com"],
+    "dbs": ["dbs.com", "dbs.com.sg"],
+    "uob": ["uob.com.sg", "uobgroup.com"],
+    "mcafee": ["mcafee.com"],
+    "norton": ["norton.com"],
+    "walmart": ["walmart.com"],
+    "lowes": ["lowes.com"],
+    "swiggy": ["swiggy.in"],
+    "united healthcare": ["uhc.com", "unitedhealthgroup.com"],
+    "united-healthcare": ["uhc.com", "unitedhealthgroup.com"]
+}
+
+GENERIC_SERVICE_LURES = [
+    "cloud storage", "cloud backup", "cloud full", "cloud capacity",
+    "payment-declined", "payment declined", "payment-failed", "payment failed",
+    "delivery status", "parcel delivery", "emergency notice", "account security",
+    "verification", "final notice", "storage notice", "daily-health-alert"
+]
+
 def parse_from_header(from_header: str) -> Tuple[str, str, str]:
     """
     Parses a From header into (display_name, email_address, domain).
@@ -129,18 +167,47 @@ def detect_bec_and_impersonation(
         headers.get("feedback-id")
     )
 
-    # 2. Display Name Spoofing via Free Webmail
-    # True BEC requires an executive/leadership title or department/authority keyword
+    # 2. Display Name Spoofing (Freemail, Brand Mimicry & Service Lures)
     brand_keywords = [
         "support", "security", "billing", "helpdesk", "administrator", "service",
-        "official", "verification", "bank", "portal", "compliance", "legal", "payroll"
+        "official", "verification", "bank", "portal", "compliance", "legal", "payroll",
+        "customs", "delivery", "shipping", "dispatch", "express", "order"
     ]
-    has_dept_lure = any(re.search(rf"\b{bk}\b", display_name.lower()) for bk in brand_keywords)
+    disp_lower = display_name.lower().strip()
+    has_dept_lure = any(re.search(rf"\b{bk}\b", disp_lower) for bk in brand_keywords)
+
+    matched_brand = None
+    for brand, legit_domains in KNOWN_SPOOFED_ENTITIES.items():
+        if brand in disp_lower:
+            # If the sender domain matches official domains, or brand is cleanly in sender_domain and authenticated
+            brand_clean = brand.replace(" ", "").replace("-", "")
+            domain_clean = sender_domain.replace("-", "").replace(".", "")
+            is_legit = any(sender_domain == ld or sender_domain.endswith("." + ld) for ld in legit_domains) or (brand_clean in domain_clean and auth_ok)
+            if not is_legit:
+                matched_brand = brand
+                break
+
+    matched_service_lure = None
+    if not matched_brand and not is_newsletter:
+        for lure in GENERIC_SERVICE_LURES:
+            if lure in disp_lower:
+                matched_service_lure = lure
+                break
 
     if not is_newsletter and is_freemail_sender and (is_executive_lure or has_dept_lure):
         # Sending from a personal @gmail.com but display name claims to be CEO / Corporate persona
         is_display_name_spoof = True
         flags.append(f"🚨 Display-Name Spoofing: Corporate/Executive persona ('{display_name}') sending from public freemail service ('{sender_domain}')")
+        bec_score += 35
+    elif matched_brand:
+        # Claims to be a major institution (DHL, SingPost, StarHub, Google, Walmart, McAfee, etc.) but domain does not match
+        is_display_name_spoof = True
+        flags.append(f"🚨 Brand Display-Name Spoofing: Visible sender claims '{display_name}' ({matched_brand.upper()}), but originated from unassociated domain '{sender_domain}'")
+        bec_score += 45
+    elif matched_service_lure and not auth_ok:
+        # Deceptive system or security department lure on unauthenticated domain
+        is_display_name_spoof = True
+        flags.append(f"🚨 Deceptive Sender Persona: Display name uses service lure '{display_name}' on unaligned/untrusted domain '{sender_domain}'")
         bec_score += 35
 
     # 3. Financial / Wire Transfer Fraud Lures
@@ -206,8 +273,11 @@ def detect_bec_and_impersonation(
     elif (bec_score >= 50 and is_financial_lure) or (is_financial_lure and is_display_name_spoof):
         verdict = "Business Email Compromise (BEC / Wire Fraud)"
         confidence = min(int(bec_score * 0.95 + 10), 99)
-    elif is_display_name_spoof and (is_executive_lure or has_dept_lure):
+    elif is_display_name_spoof and is_executive_lure:
         verdict = "Executive Impersonation"
+        confidence = min(int(bec_score * 0.9 + 10), 95)
+    elif is_display_name_spoof:
+        verdict = "Brand / Service Impersonation (Display Spoof)"
         confidence = min(int(bec_score * 0.9 + 10), 95)
     elif has_cred_lure and ("verify" in combined_text or "suspension" in combined_text or "urgent" in combined_text) and not is_newsletter:
         if auth_ok:
@@ -219,7 +289,7 @@ def detect_bec_and_impersonation(
     elif bec_score >= 40 and is_financial_lure and not auth_ok:
         verdict = "Suspicious Financial / Authority Solicitation"
         confidence = 72
-    elif is_newsletter:
+    elif is_newsletter and not is_display_name_spoof and not is_financial_lure and auth_ok:
         verdict = "Standard / Legitimate (Newsletter / Subscription)"
         confidence = 95
     elif auth_ok and (found_transactional or "inr" in combined_text or "statement" in combined_text or "debited" in combined_text):
