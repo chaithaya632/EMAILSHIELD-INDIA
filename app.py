@@ -5,7 +5,7 @@ import os
 from core.parser import SecureEmailParser
 from core.indicators import extract_all_indicators
 from core.auth_claims import parse_auth_results, evaluate_auth_and_alignment
-from core.geolocation import get_geolocation
+from core.geolocation import get_geolocation, get_sender_location, is_public_ip
 from core.risk import evaluate_rules, calculate_hybrid_risk
 from core.classifier import MLClassifier
 from core.case_store import save_case, get_all_cases, update_case_metadata, get_case_record, export_case_iocs_csv, export_case_iocs_json
@@ -569,7 +569,7 @@ elif selected_nav == "📡 Live Mailbox Sentinel (50s Auto-Defense)":
                 unsafe_allow_html=True
             )
 
-            poll_sec = st.slider("Polling Frequency (seconds):", min_value=30, max_value=120, value=50, step=10, key="sentinel_poll_slider")
+            poll_sec = st.slider("Polling Frequency (seconds):", min_value=10, max_value=120, value=30, step=5, key="sentinel_poll_slider")
 
             c_btn1, c_btn2 = st.columns(2)
             with c_btn1:
@@ -613,9 +613,20 @@ elif selected_nav == "📡 Live Mailbox Sentinel (50s Auto-Defense)":
         # WhatsApp Setup
         wa_enabled = st.checkbox("💬 Enable WhatsApp Alerts (CallMeBot API - ₹0 Free)", value=st.session_state.get("sentinel_wa_enabled", False), key="sentinel_wa_enabled")
         if wa_enabled:
-            with st.expander("⚡ How to get CallMeBot API Key & WhatsApp Bot Links", expanded=True):
-                st.markdown(
-                    """
+            wa_phone_val = st.session_state.get("sentinel_wa_phone", "")
+            wa_key_val = st.session_state.get("sentinel_wa_key", "")
+            wa_is_armed = bool(wa_phone_val and wa_key_val)
+
+            if wa_is_armed and not st.session_state.get("show_wa_edit", False):
+                masked_phone = wa_phone_val[:4] + "••••" + wa_phone_val[-2:] if len(wa_phone_val) >= 6 else "••••••••"
+                st.success(f"🟢 **WhatsApp Alerts Armed** (`{masked_phone}`)")
+                if st.button("⚙️ Reconfigure WhatsApp Credentials", key="btn_toggle_wa_edit"):
+                    st.session_state["show_wa_edit"] = True
+                    st.rerun()
+            else:
+                with st.expander("⚡ How to get CallMeBot API Key & WhatsApp Bot Links", expanded=not wa_is_armed):
+                    st.markdown(
+                        """
 <div style="background-color: #0f172a; border-left: 4px solid #22c55e; padding: 12px; border-radius: 6px; font-size: 0.9em; margin-bottom: 12px;">
 <b style="color: #22c55e;">📱 WhatsApp Bot Setup Steps:</b><br>
 <b>1. Direct WhatsApp Link:</b> 👉 <a href="https://wa.me/34941872320?text=I%20allow%20callmebot%20to%20send%20me%20messages" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">Click Here to Open WhatsApp with CallMeBot</a><br>
@@ -626,39 +637,58 @@ Copy that number and paste it below!<br><br>
 <span style="color: #f59e0b; font-size: 0.85em;">ℹ️ <b>Note:</b> CallMeBot's WhatsApp servers occasionally report full due to high traffic. If unavailable, you can also use the official <b>Telegram Bot</b> below for 100% instant, guaranteed phone alerts.</span>
 </div>
 """,
-                    unsafe_allow_html=True
-                )
-            wa_phone = st.text_input("WhatsApp Phone (+country code):", value=st.session_state.get("sentinel_wa_phone", ""), placeholder="+919876543210", key="sentinel_wa_phone")
-            wa_key = st.text_input("CallMeBot API Key:", value=st.session_state.get("sentinel_wa_key", ""), type="password", placeholder="e.g. 123456", key="sentinel_wa_key")
-            
-            if st.button("🧪 Send Test WhatsApp Alert", key="btn_test_wa"):
-                if not wa_phone or not wa_key:
-                    st.error("Please enter your phone number and CallMeBot API key first.")
-                else:
-                    with st.spinner("Sending test ping to WhatsApp..."):
-                        t_ok, t_msg = send_test_alert("whatsapp", {"whatsapp_phone": wa_phone, "whatsapp_apikey": wa_key})
-                    if t_ok:
-                        st.success("✅ WhatsApp test message delivered! Check your phone.")
-                        if creds.get("email"):
-                            save_account_alert_config(creds["email"], {
-                                "whatsapp_enabled": True,
-                                "whatsapp_phone": wa_phone,
-                                "whatsapp_apikey": wa_key,
-                                "telegram_enabled": st.session_state.get("sentinel_tg_enabled", False),
-                                "telegram_token": st.session_state.get("sentinel_tg_token", ""),
-                                "telegram_chat_id": st.session_state.get("sentinel_tg_cid", "")
-                            })
-                            st.caption("🔒 Alert credentials saved to your encrypted account vault.")
-                    else:
-                        st.error(f"Dispatch failed: {t_msg}")
+                        unsafe_allow_html=True
+                    )
+                wa_phone = st.text_input("WhatsApp Phone (+country code):", value=wa_phone_val, placeholder="+919876543210", key="sentinel_wa_phone")
+                wa_key = st.text_input("CallMeBot API Key:", value=wa_key_val, type="password", placeholder="e.g. 123456", key="sentinel_wa_key")
+                
+                c_watest, c_wahide = st.columns(2)
+                with c_watest:
+                    if st.button("🧪 Send Test WhatsApp Alert", key="btn_test_wa"):
+                        if not wa_phone or not wa_key:
+                            st.error("Please enter your phone number and CallMeBot API key first.")
+                        else:
+                            with st.spinner("Sending test ping to WhatsApp..."):
+                                t_ok, t_msg = send_test_alert("whatsapp", {"whatsapp_phone": wa_phone, "whatsapp_apikey": wa_key})
+                            if t_ok:
+                                st.success("✅ WhatsApp test message delivered! Check your phone.")
+                                st.session_state["show_wa_edit"] = False
+                                if creds.get("email"):
+                                    save_account_alert_config(creds["email"], {
+                                        "whatsapp_enabled": True,
+                                        "whatsapp_phone": wa_phone,
+                                        "whatsapp_apikey": wa_key,
+                                        "telegram_enabled": st.session_state.get("sentinel_tg_enabled", False),
+                                        "telegram_token": st.session_state.get("sentinel_tg_token", ""),
+                                        "telegram_chat_id": st.session_state.get("sentinel_tg_cid", "")
+                                    })
+                                st.rerun()
+                            else:
+                                st.error(f"Dispatch failed: {t_msg}")
+                with c_wahide:
+                    if wa_is_armed and st.session_state.get("show_wa_edit", False):
+                        if st.button("🔒 Hide WhatsApp Credentials", key="btn_hide_wa"):
+                            st.session_state["show_wa_edit"] = False
+                            st.rerun()
 
         # Telegram Setup
         st.markdown("---")
         tg_enabled = st.checkbox("✈️ Enable Telegram Alerts (Official Telegram Bot - 100% Guaranteed & Free)", value=st.session_state.get("sentinel_tg_enabled", False), key="sentinel_tg_enabled")
         if tg_enabled:
-            with st.expander("⚡ How to get Telegram Bot Token & Chat ID (30 Seconds)", expanded=True):
-                st.markdown(
-                    """
+            tg_token_val = st.session_state.get("sentinel_tg_token", "")
+            tg_cid_val = st.session_state.get("sentinel_tg_cid", "")
+            tg_is_armed = bool(tg_token_val and tg_cid_val)
+
+            if tg_is_armed and not st.session_state.get("show_tg_edit", False):
+                masked_cid = "••••" + str(tg_cid_val)[-4:] if len(str(tg_cid_val)) >= 4 else "••••••••"
+                st.success(f"🟢 **Telegram Alert Bot Armed & Ready** (Chat ID: `{masked_cid}`)")
+                if st.button("⚙️ Reconfigure Telegram Credentials", key="btn_toggle_tg_edit"):
+                    st.session_state["show_tg_edit"] = True
+                    st.rerun()
+            else:
+                with st.expander("⚡ How to get Telegram Bot Token & Chat ID (30 Seconds)", expanded=not tg_is_armed):
+                    st.markdown(
+                        """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 0.9em; margin-bottom: 12px;">
 <b style="color: #38bdf8;">Quick 2-Step Official Telegram Setup (Never blocked, 100% Free):</b><br>
 <b>1. Create your Personal Bot (15s):</b><br>
@@ -671,31 +701,39 @@ Copy that number and paste it below!<br><br>
 • Open your newly created bot in Telegram and click <b>START</b> so it can send you alerts!
 </div>
 """,
-                    unsafe_allow_html=True
-                )
-            tg_token = st.text_input("Telegram Bot Token:", value=st.session_state.get("sentinel_tg_token", ""), type="password", placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ", key="sentinel_tg_token")
-            tg_cid = st.text_input("Telegram Chat ID:", value=st.session_state.get("sentinel_tg_cid", ""), placeholder="e.g. 987654321", key="sentinel_tg_cid")
-            
-            if st.button("🧪 Send Test Telegram Alert", key="btn_test_tg"):
-                if not tg_token or not tg_cid:
-                    st.error("Please enter both your Bot Token and Chat ID first.")
-                else:
-                    with st.spinner("Sending test ping to Telegram..."):
-                        t_ok, t_msg = send_test_alert("telegram", {"telegram_token": tg_token, "telegram_chat_id": tg_cid})
-                    if t_ok:
-                        st.success("✅ Telegram test message delivered! Check your phone.")
-                        if creds.get("email"):
-                            save_account_alert_config(creds["email"], {
-                                "whatsapp_enabled": st.session_state.get("sentinel_wa_enabled", False),
-                                "whatsapp_phone": st.session_state.get("sentinel_wa_phone", ""),
-                                "whatsapp_apikey": st.session_state.get("sentinel_wa_key", ""),
-                                "telegram_enabled": True,
-                                "telegram_token": tg_token,
-                                "telegram_chat_id": tg_cid
-                            })
-                            st.caption("🔒 Alert credentials saved to your encrypted account vault.")
-                    else:
-                        st.error(f"Dispatch failed: {t_msg}")
+                        unsafe_allow_html=True
+                    )
+                tg_token = st.text_input("Telegram Bot Token:", value=tg_token_val, type="password", placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ", key="sentinel_tg_token")
+                tg_cid = st.text_input("Telegram Chat ID:", value=tg_cid_val, placeholder="e.g. 987654321", key="sentinel_tg_cid")
+                
+                c_tgtest, c_tghide = st.columns(2)
+                with c_tgtest:
+                    if st.button("🧪 Send Test Telegram Alert", key="btn_test_tg"):
+                        if not tg_token or not tg_cid:
+                            st.error("Please enter both your Bot Token and Chat ID first.")
+                        else:
+                            with st.spinner("Sending test ping to Telegram..."):
+                                t_ok, t_msg = send_test_alert("telegram", {"telegram_token": tg_token, "telegram_chat_id": tg_cid})
+                            if t_ok:
+                                st.success("✅ Telegram test message delivered! Check your phone.")
+                                st.session_state["show_tg_edit"] = False
+                                if creds.get("email"):
+                                    save_account_alert_config(creds["email"], {
+                                        "whatsapp_enabled": st.session_state.get("sentinel_wa_enabled", False),
+                                        "whatsapp_phone": st.session_state.get("sentinel_wa_phone", ""),
+                                        "whatsapp_apikey": st.session_state.get("sentinel_wa_key", ""),
+                                        "telegram_enabled": True,
+                                        "telegram_token": tg_token,
+                                        "telegram_chat_id": tg_cid
+                                    })
+                                st.rerun()
+                            else:
+                                st.error(f"Dispatch failed: {t_msg}")
+                with c_tghide:
+                    if tg_is_armed and st.session_state.get("show_tg_edit", False):
+                        if st.button("🔒 Hide Telegram Credentials", key="btn_hide_tg"):
+                            st.session_state["show_tg_edit"] = False
+                            st.rerun()
 
     # Inbound Activity Stream & Audit Log
     st.markdown("---")
@@ -718,11 +756,12 @@ Copy that number and paste it below!<br><br>
                 alert_str = "⚠️ Failed / Disabled"
 
             formatted_table.append({
-                "Time": a["timestamp"],
+                "Email Received": a.get("email_date") or a.get("timestamp", "Unknown"),
+                "Scanned At": a.get("scan_time") or a.get("timestamp", "Just now"),
                 "Verdict": v_badge,
                 "Threat Score": f"{a['score']}/100",
                 "Sender": a["sender"][:30],
-                "Subject": mask_sensitive_subject(a["subject"])[:40],
+                "Subject": mask_sensitive_subject(a["subject"])[:35],
                 "Mobile Alert": alert_str
             })
         st.dataframe(formatted_table, use_container_width=True)
@@ -859,11 +898,18 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             for a in parsed_auth:
                 auth_evidence.append(AuthEvidence(**a))
                 
-        # 4. Geolocation
+        # 4. Geolocation & Originating Sender Location
         geolocations = []
         for ip in raw_iocs["ipv4"]:
             geo = get_geolocation(ip)
             geolocations.append(GeolocationInfo(**geo))
+            
+        sender_loc = get_sender_location(headers, parsed_data.get("received_chain", []))
+        if sender_loc.get("is_identified") and sender_loc.get("sender_ip"):
+            s_ip = sender_loc["sender_ip"]
+            if s_ip not in [g.ip for g in geolocations] and is_public_ip(s_ip):
+                s_geo = get_geolocation(s_ip)
+                geolocations.insert(0, GeolocationInfo(**s_geo))
             
         # 5. Autonomous ReAct Forensic Investigation
         subject = str(headers.get("subject", ""))
@@ -997,6 +1043,7 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             ai_reasoning=ai_briefing,
             agent_trace=agent_trace,
             timeline=timeline_events,
+            sender_location=sender_loc,
             risk_score=risk_score,
             risk_reasons=reasons
         )
@@ -1068,6 +1115,38 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                 with col_safe3:
                     st.metric("Risk Level", "LOW", delta="SAFE", delta_color="normal")
                     
+                # Originating IP & Geolocation Card
+                sloc = case_report.sender_location or {}
+                if sloc.get("is_identified"):
+                    st.markdown(
+                        f"""
+                        <div style="background-color: rgba(6, 78, 59, 0.4); border: 1px solid #10b981; border-radius: 8px; padding: 12px 16px; margin: 14px 0 16px 0;">
+                            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                                <div>
+                                    <span style="font-size: 1.05em; font-weight: 700; color: #ecfdf5;">📍 Originating IP & Geolocation: {sloc.get('display_location')}</span>
+                                    <span style="background-color: #065f46; color: #a7f3d0; font-size: 0.8em; padding: 2px 8px; border-radius: 12px; margin-left: 8px;">Evidence Source: {sloc.get('ip_source')}</span>
+                                </div>
+                                <div style="color: #6ee7b7; font-size: 0.88em;">
+                                    <b>Derived Originating IP:</b> <code style="color: #67e8f9;">{sloc.get('sender_ip')}</code> | <b>Approximate Infrastructure:</b> {sloc.get('org', 'Unknown')}
+                                </div>
+                            </div>
+                            <div style="color: #a7f3d0; font-size: 0.78em; margin-top: 6px; font-style: italic;">
+                                * Note: Derived from available email evidence. GeoIP provides approximate infrastructure context; does not prove physical sender location or individual identity. VPNs, proxies, relays, NAT, and compromised systems can affect attribution.
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown(
+                        """
+                        <div style="background-color: rgba(30, 41, 59, 0.4); border: 1px dashed #475569; border-radius: 8px; padding: 10px 14px; margin: 12px 0 16px 0;">
+                            <span style="color: #94a3b8; font-size: 0.9em;">📍 <b>Originating IP & Geolocation:</b> <i>Unavailable in public headers (Internal hop, RFC1918 range, or relay-masked)</i></span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
                 st.markdown("---")
                 st.markdown("#### 📋 Plain-Language Safety Summary:")
                 
@@ -1113,13 +1192,16 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                     for r in reasons:
                         st.write(f"- {r}")
                         
-                    c_meta1, c_meta2, c_meta3 = st.columns(3)
+                    c_meta1, c_meta2, c_meta3, c_meta4 = st.columns(4)
                     with c_meta1:
-                        st.metric("SHA-256", f"{parsed_data['sha256'][:16]}...", help=parsed_data['sha256'])
+                        st.metric("SHA-256", f"{parsed_data['sha256'][:14]}...", help=parsed_data['sha256'])
                     with c_meta2:
-                        st.metric("Sender", case_report.sender[:25])
+                        st.metric("Sender", case_report.sender[:22])
                     with c_meta3:
-                        st.metric("Subject", case_report.subject[:25])
+                        st.metric("Subject", case_report.subject[:22])
+                    with c_meta4:
+                        loc_val = sloc.get('display_location', 'Unavailable') if sloc.get('is_identified') else 'Unavailable'
+                        st.metric("Approx. Origin", loc_val[:22])
                 else:
                     st.caption("💡 *You are viewing the simple summary mode. Check the box above anytime if you want to inspect technical server hops, AI ReAct agent traces, and cryptographic hashes.*")
 
@@ -1146,6 +1228,38 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                     st.metric("Confidence", f"{case_report.verdict_confidence}%")
                 with col_verdict3:
                     st.metric("Risk Score", risk_score, delta="MALICIOUS" if risk_score == "HIGH" else "SUSPICIOUS", delta_color="inverse")
+
+                # Originating IP & Geolocation Card
+                sloc = case_report.sender_location or {}
+                if sloc.get("is_identified"):
+                    st.markdown(
+                        f"""
+                        <div style="background-color: rgba(127, 29, 29, 0.35); border: 1px solid #ef4444; border-radius: 8px; padding: 12px 16px; margin: 14px 0 16px 0;">
+                            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                                <div>
+                                    <span style="font-size: 1.05em; font-weight: 700; color: #fee2e2;">📍 Originating IP & Geolocation: {sloc.get('display_location')}</span>
+                                    <span style="background-color: #7f1d1d; color: #fca5a5; font-size: 0.8em; padding: 2px 8px; border-radius: 12px; margin-left: 8px;">Evidence Source: {sloc.get('ip_source')}</span>
+                                </div>
+                                <div style="color: #fca5a5; font-size: 0.88em;">
+                                    <b>Derived Originating IP:</b> <code style="color: #fca5a5;">{sloc.get('sender_ip')}</code> | <b>Approximate Infrastructure:</b> {sloc.get('org', 'Unknown')}
+                                </div>
+                            </div>
+                            <div style="color: #fca5a5; font-size: 0.78em; margin-top: 6px; font-style: italic;">
+                                * Note: Derived from available email evidence. GeoIP provides approximate infrastructure context; does not prove physical sender location or individual identity. VPNs, proxies, relays, NAT, and compromised systems can affect attribution.
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown(
+                        """
+                        <div style="background-color: rgba(30, 41, 59, 0.4); border: 1px dashed #475569; border-radius: 8px; padding: 10px 14px; margin: 12px 0 16px 0;">
+                            <span style="color: #94a3b8; font-size: 0.9em;">📍 <b>Originating IP & Geolocation:</b> <i>Unavailable in public headers (Internal hop, RFC1918 range, or relay-masked)</i></span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
 
                 # BEC & Display-Name Spoofing Alert Card
                 if has_bec:
@@ -1221,13 +1335,16 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                             st.markdown(f"👁️ **Observation:** {step.observation}")
                             st.markdown("---")
                             
-                    c_meta1, c_meta2, c_meta3 = st.columns(3)
+                    c_meta1, c_meta2, c_meta3, c_meta4 = st.columns(4)
                     with c_meta1:
-                        st.metric("SHA-256", f"{parsed_data['sha256'][:16]}...", help=parsed_data['sha256'])
+                        st.metric("SHA-256", f"{parsed_data['sha256'][:14]}...", help=parsed_data['sha256'])
                     with c_meta2:
-                        st.metric("Sender", case_report.sender[:25])
+                        st.metric("Sender", case_report.sender[:22])
                     with c_meta3:
-                        st.metric("Subject", case_report.subject[:25])
+                        st.metric("Subject", case_report.subject[:22])
+                    with c_meta4:
+                        loc_val = sloc.get('display_location', 'Unavailable') if sloc.get('is_identified') else 'Unavailable'
+                        st.metric("Approx. Origin", loc_val[:22])
             
         with tab2:
             st.subheader("🔐 Cryptographic Authentication & DMARC Alignment Matrix (RFC 7489)")
@@ -1405,13 +1522,123 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                 st.info("No external hyperlinks found in the email body.")
             
             st.markdown("---")
-            st.subheader("🌐 Infrastructure Geolocation & Physical Location")
+            st.subheader("🌐 Geolocation & Infrastructure Telemetry")
+            
+            sloc = case_report.sender_location or {}
+            
+            # -------------------------------------------------------------------------
+            # 1. Sender Identity & Header Provenance
+            # -------------------------------------------------------------------------
+            st.markdown("#### 📧 Sender Identity & Header Provenance")
+            c_snd1, c_snd2 = st.columns([3, 2])
+            with c_snd1:
+                sender_addr = sloc.get("sender_address") or case_report.sender
+                st.markdown(f"**Sender Address (`From:`):** `{sender_addr}`")
+            with c_snd2:
+                rp_val = sloc.get("return_path") or "Not specified"
+                if sloc.get("return_path_differs"):
+                    st.markdown(f"**Return-Path:** `{rp_val}` ⚠️ *(Differs from From:)*")
+                else:
+                    st.markdown(f"**Return-Path:** `{rp_val}`")
+
+            # -------------------------------------------------------------------------
+            # 2. Originating / Client IP Evidence & Approximate Infrastructure Location
+            # -------------------------------------------------------------------------
+            st.markdown("#### 📍 Approximate Originating Infrastructure Location")
+            if sloc.get("is_identified"):
+                is_client = sloc.get("is_client_ip", False)
+                class_badge = "🛡️ Direct Client/Originating IP Evidence" if is_client else "🛰️ Earliest Public Relay IP (Originating MTA Hop)"
+                st.info(f"**Forensic Classification:** {class_badge}")
+
+                c_sl1, c_sl2, c_sl3, c_sl4, c_sl5 = st.columns(5)
+                with c_sl1:
+                    st.metric("Originating IP", sloc.get("sender_ip", "Unavailable"))
+                with c_sl2:
+                    st.metric("Approx. Location", f"{sloc.get('city')}, {sloc.get('country')}", delta=sloc.get("flag"))
+                with c_sl3:
+                    st.metric("Region / State", str(sloc.get("region", "Unknown"))[:22])
+                with c_sl4:
+                    st.metric("ISP / Organization", str(sloc.get("org", "Unknown"))[:22])
+                with c_sl5:
+                    st.metric("ASN", str(sloc.get("asn", "Unknown"))[:16])
+
+                c_ev1, c_ev2 = st.columns([2, 3])
+                with c_ev1:
+                    st.markdown(f"**Evidence Source:** `{sloc.get('ip_source', 'Header')}`")
+                with c_ev2:
+                    raw_ev = sloc.get("raw_header_evidence")
+                    if raw_ev:
+                        with st.expander("🔍 View Raw Header Evidence Reference"):
+                            st.code(raw_ev, language="text")
+
+                st.caption(
+                    "ℹ️ **Forensic Attribution Notice:** "
+                    + sloc.get("attribution_disclaimer",
+                        "Geo-IP provides approximate geographic/infrastructure context for the identified IP. "
+                        "It does not prove the physical location or identity of the human sender. "
+                        "VPNs, proxies, shared infrastructure, webmail providers and relays may obscure the original client location."
+                    )
+                )
+            else:
+                st.warning("⚠️ **Originating IP: Not available / Relay-masked**")
+                st.markdown(
+                    f"> {sloc.get('relay_masked_explanation', 'The available email telemetry does not expose a reliable public client/originating IP. The displayed relay/domain information represents mail infrastructure rather than proof of the sender\'s device IP.')}"
+                )
+
+            # -------------------------------------------------------------------------
+            # 3. Supplementary DNS Hostname Intelligence
+            # -------------------------------------------------------------------------
+            dns_intel = sloc.get("dns_intelligence") or {}
+            if dns_intel and dns_intel.get("status") == "Resolved":
+                st.markdown("---")
+                st.markdown("#### 🌐 Resolved Host IP — DNS Intelligence (Supplementary)")
+                st.caption(
+                    "⚠️ **IMPORTANT NOTICE:** "
+                    + dns_intel.get("explanation",
+                        "DNS resolution identifies the current IP associated with the hostname; it does not prove the historical originating IP used to send this email."
+                    )
+                )
+                cd1, cd2, cd3, cd4 = st.columns(4)
+                with cd1:
+                    st.metric("Hostname Queried", dns_intel.get("hostname", "Unknown"))
+                with cd2:
+                    st.metric("Current Resolved IP", dns_intel.get("resolved_ip", "Unavailable"))
+                with cd3:
+                    loc_str = f"{dns_intel.get('city')}, {dns_intel.get('country')}" if dns_intel.get("city") else dns_intel.get("country", "Unknown")
+                    st.metric("Approx. Host Location", loc_str, delta=dns_intel.get("flag"))
+                with cd4:
+                    st.metric("Host ISP / ASN", f"{str(dns_intel.get('org', 'Unknown'))[:15]} ({dns_intel.get('asn', 'N/A')})")
+            elif dns_intel and dns_intel.get("hostname") and dns_intel.get("hostname") not in ["Unavailable", "None"]:
+                st.markdown("---")
+                st.markdown("#### 🌐 DNS Intelligence: Unavailable")
+                st.caption(
+                    f"Queried hostname `{dns_intel.get('hostname')}` could not be resolved via current DNS lookups. "
+                    "No originating IP was fabricated or inferred."
+                )
+
+            # -------------------------------------------------------------------------
+            # 4. Intermediate Relay Transit Infrastructure
+            # -------------------------------------------------------------------------
+            st.markdown("---")
+            st.markdown("#### 🛰️ Relay Transit & Intermediate Infrastructure")
+            st.caption(
+                "Mail relay and intermediate MTA infrastructure traversed during message transit. "
+                "These servers forward email across networks and should not be confused with the sender's device."
+            )
             if geolocations:
                 geo_rows = []
                 map_coords = []
+                
+                # If sender location has coordinates, put sender at index 0 so map focuses on sender
+                if sloc.get("is_identified") and sloc.get("latitude") is not None and sloc.get("longitude") is not None:
+                    map_coords.append({"lat": sloc["latitude"], "lon": sloc["longitude"]})
+
                 for g in geolocations:
                     gd = g.model_dump()
+                    is_sender = (gd.get("ip") == sloc.get("sender_ip"))
+                    role = "📍 Originating/Client IP Evidence" if (is_sender and sloc.get("is_client_ip")) else ("📍 Earliest Public Relay IP" if is_sender else "🛰️ Intermediate Mail Relay Hop")
                     geo_rows.append({
+                        "Role / Evidence Type": role,
                         "IP Address": gd.get("ip"),
                         "City": gd.get("city"),
                         "Region/State": gd.get("region"),
@@ -1422,13 +1649,13 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                         "DB Version": gd.get("db_version"),
                         "Status": gd.get("status")
                     })
-                    if gd.get("latitude") is not None and gd.get("longitude") is not None:
+                    if not is_sender and gd.get("latitude") is not None and gd.get("longitude") is not None:
                         map_coords.append({"lat": gd["latitude"], "lon": gd["longitude"]})
 
                 st.dataframe(geo_rows, use_container_width=True)
 
                 if map_coords:
-                    st.markdown("#### 🗺️ Physical Infrastructure Mapping")
+                    st.markdown("#### 🗺️ Approximate Infrastructure Mapping")
                     st.map(map_coords, zoom=2)
             else:
                 st.write("No public IP infrastructure observed.")
@@ -1547,15 +1774,15 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             col_d1, col_d2 = st.columns(2)
             with col_d1:
                 with open(pdf_path, "rb") as f:
-                    st.download_button("📜 Download Court-Admissible PDF Report", f, file_name=f"{case_id}_forensic_report.pdf", mime="application/pdf", use_container_width=True)
+                    st.download_button("📜 Download Forensic Evidence Report (PDF)", f, file_name=f"{case_id}_forensic_report.pdf", mime="application/pdf", use_container_width=True)
             with col_d2:
                 with open(json_path, "rb") as f:
                     st.download_button("⚡ Download Full Forensic JSON", f, file_name=f"{case_id}.json", mime="application/json", use_container_width=True)
 
-            # Indian Cybercrime (I4C / NCRP) Formal Complaint Packager
+            # Indian Cybercrime (I4C / NCRP-Oriented Evidence Pack)
             st.markdown("---")
-            st.subheader("🇮🇳 Indian Cybercrime (I4C / NCRP) Formal Complaint Packager")
-            st.caption("Official law enforcement reporting structure ready for submission to cybercrime.gov.in:")
+            st.subheader("🇮🇳 Indian Cybercrime (I4C / NCRP-Oriented Evidence Pack)")
+            st.caption("Structured electronic evidence package aligned with I4C/NCRP reporting formats:")
             
             ncrp_text = generate_ncrp_complaint_text(updated_case_dict)
             st.text_area("NCRP Portal Complaint Draft (Copy & Paste ready for cybercrime.gov.in):", value=ncrp_text, height=180)
@@ -1567,7 +1794,7 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             with col_pkg1:
                 with open(ncrp_pdf_path, "rb") as nf:
                     st.download_button(
-                        "🇮🇳 Download Official NCRP Evidence Annexure (PDF)",
+                        "🇮🇳 Download Electronic Evidence Annexure (PDF)",
                         nf,
                         file_name=f"I4C_NCRP_Annexure_{case_id}.pdf",
                         mime="application/pdf",

@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, Tuple, List
 from core.parser import SecureEmailParser
 from core.indicators import extract_all_indicators
 from core.auth_claims import parse_auth_results
-from core.geolocation import get_geolocation
+from core.geolocation import get_geolocation, get_sender_location
 from core.risk import evaluate_rules, calculate_hybrid_risk
 from core.case_store import save_case
 from core.schemas import (
@@ -265,6 +265,7 @@ def process_forwarded_message(raw_bytes: bytes, ml_classifier) -> Tuple[CaseRepo
     ))
     
     # 7. Case Report
+    sender_loc = get_sender_location(headers, parsed_data.get("received_chain", []))
     case_report = CaseReport(
         case_id=case_id,
         timestamp=datetime.datetime.utcnow(),
@@ -281,6 +282,7 @@ def process_forwarded_message(raw_bytes: bytes, ml_classifier) -> Tuple[CaseRepo
         domain_reputation=domain_rep,
         ai_reasoning=ai_briefing,
         timeline=timeline_events,
+        sender_location=sender_loc,
         risk_score=risk_score,
         risk_reasons=reasons
     )

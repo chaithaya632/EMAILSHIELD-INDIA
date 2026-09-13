@@ -342,7 +342,7 @@ def evaluate_rules(
                 "finding": "SMTP Relay Header Timestamp Anomaly",
                 "evidence": anom,
                 "severity": "HIGH" if is_negative else "MEDIUM",
-                "explanation": "Relay hop transit timestamps show clock distortion or forged Received headers inserted by an attacker."
+                "explanation": "Negative hop delta detected — possible clock skew, timestamp inconsistency, or header anomaly; requires investigation."
             })
 
     # 13. Hyperlink Anchor Text Spoofing

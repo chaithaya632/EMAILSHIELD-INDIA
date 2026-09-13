@@ -168,6 +168,7 @@ class CaseReport(BaseModel):
     agent_trace: List[AgentStep] = []
     timeline: List[EventTimeline] = []
     
+    sender_location: Optional[Dict[str, Any]] = None
     risk_score: str = "UNKNOWN"
     risk_reasons: List[str] = []
 

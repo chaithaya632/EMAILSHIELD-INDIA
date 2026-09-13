@@ -1,7 +1,8 @@
 import ipaddress
 import os
 import datetime
-from typing import Dict, Any, Optional
+import re
+from typing import Dict, Any, Optional, Tuple, List
 import requests
 
 # Supported local offline databases
@@ -156,3 +157,313 @@ def get_geolocation(ip_str: str) -> Dict[str, Any]:
     
     _GEO_CACHE[cleaned_ip] = res
     return res
+
+COUNTRY_FLAGS = {
+    "India": "🇮🇳", "United States": "🇺🇸", "United Kingdom": "🇬🇧", "Germany": "🇩🇪",
+    "France": "🇫🇷", "Singapore": "🇸🇬", "Canada": "🇨🇦", "Australia": "🇦🇺",
+    "Netherlands": "🇳🇱", "Ireland": "🇮🇪", "China": "🇨🇳", "Japan": "🇯🇵",
+    "Russia": "🇷🇺", "Brazil": "🇧🇷", "United Arab Emirates": "🇦🇪", "Switzerland": "🇨🇭",
+    "Italy": "🇮🇹", "Spain": "🇪🇸", "Sweden": "🇸🇪", "South Korea": "🇰🇷",
+    "Hong Kong": "🇭🇰", "Taiwan": "🇹🇼", "Israel": "🇮🇱", "South Africa": "🇿🇦",
+    "Thailand": "🇹🇭", "Indonesia": "🇮🇩", "Malaysia": "🇲🇾", "Vietnam": "🇻🇳",
+    "Philippines": "🇵🇭", "Nigeria": "🇳🇬", "Kenya": "🇰🇪", "Pakistan": "🇵🇰",
+    "Bangladesh": "🇧🇩", "Sri Lanka": "🇱🇰", "Ukraine": "🇺🇦", "Poland": "🇵🇱",
+    "Romania": "🇷🇴", "Chile": "🇨🇱", "Mexico": "🇲🇽", "Argentina": "🇦🇷"
+}
+
+def get_country_flag(country_name: str) -> str:
+    if not country_name or country_name == "UNKNOWN":
+        return "🌐"
+    return COUNTRY_FLAGS.get(country_name, "🌐")
+
+import socket
+from email.utils import parseaddr
+
+def extract_originating_sender_telemetry(
+    headers: Dict[str, Any],
+    received_chain: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """
+    Forensically analyzes email headers and relay metadata using an evidence hierarchy:
+    - Priority 1: Explicit client/originating IP headers (X-Originating-IP, X-Sender-IP, etc.)
+    - Priority 2: Authentication evidence (Authentication-Results, Received-SPF client-ip=)
+    - Priority 3: Chronological Received chain (earliest public IP in external connection)
+    - Fallback: Hostname candidate for supplementary DNS intelligence
+    """
+    hdr_lower = {k.lower(): v for k, v in headers.items()}
+    
+    # Priority 1: Explicit client/originating IP headers
+    explicit_headers = [
+        "x-originating-ip", "x-sender-ip", "x-real-ip", "x-client-ip",
+        "x-original-client-ip", "x-source-ip"
+    ]
+    for h in explicit_headers:
+        val = hdr_lower.get(h)
+        if val:
+            val_str = " ".join(val) if isinstance(val, list) else str(val)
+            matches = re.findall(r'(?:[0-9]{1,3}\.){3}[0-9]{1,3}', val_str)
+            for ip in matches:
+                if is_public_ip(ip):
+                    return {
+                        "ip": ip,
+                        "source": f"Header '{h}'",
+                        "classification": "Originating/Client IP Evidence",
+                        "raw_evidence": f"{h}: {val_str}",
+                        "is_client_ip": True,
+                        "hostname_candidate": None
+                    }
+
+    # Priority 2: Authentication evidence (client-ip= in Received-SPF / Authentication-Results)
+    auth_fields = [
+        ("received-spf", hdr_lower.get("received-spf")),
+        ("authentication-results", hdr_lower.get("authentication-results"))
+    ]
+    for auth_hdr_name, auth_val in auth_fields:
+        if auth_val:
+            auth_str = " ".join(auth_val) if isinstance(auth_val, list) else str(auth_val)
+            matches = re.findall(
+                r'(?:client-ip\s*=\s*|designates\s+|sender\s+ip\s+is\s+)\s*([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})',
+                auth_str,
+                re.IGNORECASE
+            )
+            for ip in matches:
+                if is_public_ip(ip):
+                    return {
+                        "ip": ip,
+                        "source": f"Authentication Evidence ({auth_hdr_name}: client-ip={ip})",
+                        "classification": "Originating/Client IP Evidence (Authentication client-ip)",
+                        "raw_evidence": auth_str[:120],
+                        "is_client_ip": True,
+                        "hostname_candidate": None
+                    }
+
+    # Priority 3: Received chain - chronological earliest (bottom-most) public hop
+    chain = received_chain or hdr_lower.get("received", [])
+    if isinstance(chain, str):
+        chain = [chain]
+    
+    hostname_candidate = None
+    if chain:
+        for rec in reversed(chain):
+            rec_str = str(rec)
+            # Find public IPs in this Received hop
+            ips = re.findall(r'(?:[0-9]{1,3}\.){3}[0-9]{1,3}', rec_str)
+            for ip in ips:
+                if is_public_ip(ip):
+                    return {
+                        "ip": ip,
+                        "source": "Earliest Public Relay IP (Originating MTA Hop)",
+                        "classification": "Earliest Public Relay IP",
+                        "raw_evidence": rec_str[:150],
+                        "is_client_ip": False,
+                        "hostname_candidate": None
+                    }
+            
+            # If no IP was found, look for hostname following 'from'
+            if not hostname_candidate:
+                h_match = re.search(r'(?i)\bfrom\s+([a-zA-Z0-9][-a-zA-Z0-9.]*\.[a-zA-Z]{2,})\b', rec_str)
+                if h_match:
+                    h_val = h_match.group(1).lower()
+                    if not re.match(r'^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$', h_val) and "local" not in h_val:
+                        hostname_candidate = h_val
+
+    # Priority 4: Fallback header scan for any public IP
+    all_hdr_text = " ".join([str(v) for v in headers.values()])
+    fallback_ips = re.findall(r'(?:[0-9]{1,3}\.){3}[0-9]{1,3}', all_hdr_text)
+    for ip in reversed(fallback_ips):
+        if is_public_ip(ip):
+            return {
+                "ip": ip,
+                "source": "Header Inspection Candidate",
+                "classification": "Earliest Public Relay IP",
+                "raw_evidence": f"Found in header values: {ip}",
+                "is_client_ip": False,
+                "hostname_candidate": hostname_candidate
+            }
+
+    # No reliable public IP found
+    return {
+        "ip": None,
+        "source": "No public sender IP in headers",
+        "classification": "Relay-masked",
+        "raw_evidence": "",
+        "is_client_ip": False,
+        "hostname_candidate": hostname_candidate
+    }
+
+def extract_originating_sender_ip(
+    headers: Dict[str, Any],
+    received_chain: Optional[List[str]] = None
+) -> Tuple[Optional[str], str]:
+    """
+    Forensically derives the originating public IP from available email headers and relay metadata.
+    Returns 2-tuple (ip, source) for backward compatibility.
+    """
+    telem = extract_originating_sender_telemetry(headers, received_chain)
+    return telem["ip"], telem["source"]
+
+def resolve_hostname_supplementary(hostname: Optional[str]) -> Dict[str, Any]:
+    """
+    DNS Hostname Resolution (Supplementary Intelligence).
+    If a Received: header contains only a hostname and no IP (e.g., 'from mail.attacker-server.com'),
+    DNS resolution may be used as supplementary infrastructure intelligence.
+    
+    IMPORTANT: A DNS-resolved IP MUST NOT be labeled 'Attacker IP' or 'Sender's actual IP'.
+    Instead, it is displayed separately as 'Resolved Host IP — DNS Intelligence'.
+    """
+    if not hostname or "." not in hostname:
+        return {
+            "hostname": hostname or "Unavailable",
+            "resolved_ip": None,
+            "status": "Unavailable",
+            "display_label": "DNS Intelligence: Unavailable",
+            "explanation": "DNS resolution identifies the current IP associated with the hostname; it does not prove the historical originating IP used to send this email."
+        }
+
+    clean_host = hostname.strip("[]() :")
+    try:
+        orig_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(1.0)
+        try:
+            resolved_ip = socket.gethostbyname(clean_host)
+        finally:
+            socket.setdefaulttimeout(orig_timeout)
+
+        if is_public_ip(resolved_ip):
+            geo = get_geolocation(resolved_ip)
+            city = geo.get("city") or "Unknown"
+            country = geo.get("country") or "Unknown"
+            flag = get_country_flag(country)
+            return {
+                "hostname": clean_host,
+                "resolved_ip": resolved_ip,
+                "status": "Resolved",
+                "display_label": f"Resolved Host IP: {resolved_ip}",
+                "city": city,
+                "country": country,
+                "flag": flag,
+                "org": geo.get("org") or "Unknown ISP",
+                "asn": geo.get("asn") or "Unknown ASN",
+                "latitude": geo.get("latitude"),
+                "longitude": geo.get("longitude"),
+                "explanation": "DNS resolution identifies the current IP associated with the hostname; it does not prove the historical originating IP used to send this email."
+            }
+    except Exception:
+        pass
+
+    return {
+        "hostname": clean_host,
+        "resolved_ip": None,
+        "status": "Unavailable",
+        "display_label": "DNS Intelligence: Unavailable",
+        "explanation": "DNS resolution identifies the current IP associated with the hostname; it does not prove the historical originating IP used to send this email."
+    }
+
+def get_sender_location(
+    headers: Dict[str, Any],
+    received_chain: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """
+    Resolves approximate originating infrastructure geolocation context from available email evidence.
+    Returns comprehensive forensic sender dictionary including:
+    - Sender Address (From: display name + email)
+    - Return-Path / Envelope Sender comparison
+    - Originating / Client IP evidence and classification
+    - Approximate infrastructure location
+    - Supplementary DNS intelligence (if applicable)
+    """
+    from_raw = str(headers.get("from", "Unknown Sender"))
+    display_name, sender_email = parseaddr(from_raw)
+    sender_address_disp = from_raw if from_raw != "Unknown Sender" else (f'"{display_name}" <{sender_email}>' if display_name else sender_email)
+
+    return_path_raw = str(headers.get("return-path", ""))
+    _, return_path_email = parseaddr(return_path_raw)
+    return_path_disp = return_path_email or (return_path_raw if return_path_raw else "Not specified")
+
+    return_path_differs = False
+    if return_path_email and sender_email:
+        return_path_differs = (return_path_email.lower() != sender_email.lower())
+
+    telem = extract_originating_sender_telemetry(headers, received_chain)
+    sender_ip = telem["ip"]
+
+    # Supplementary DNS intelligence if hostname candidate was found
+    dns_intel = resolve_hostname_supplementary(telem.get("hostname_candidate"))
+
+    attribution_disclaimer = (
+        "Geo-IP provides approximate geographic/infrastructure context for the identified IP. "
+        "It does not prove the physical location or identity of the human sender. "
+        "VPNs, proxies, shared infrastructure, webmail providers and relays may obscure the original client location."
+    )
+
+    relay_masked_explanation = (
+        "The available email telemetry does not expose a reliable public client/originating IP. "
+        "The displayed relay/domain information represents mail infrastructure rather than proof of the sender's device IP."
+    )
+
+    if not sender_ip:
+        return {
+            "sender_address": sender_address_disp,
+            "sender_email": sender_email or "Unknown",
+            "sender_display_name": display_name,
+            "return_path": return_path_disp,
+            "return_path_differs": return_path_differs,
+            "sender_ip": "Not available / Relay-masked",
+            "ip_classification": "Relay-masked",
+            "ip_source": telem["source"],
+            "raw_header_evidence": telem["raw_evidence"],
+            "is_identified": False,
+            "is_client_ip": False,
+            "country": "Unknown",
+            "region": "Unknown",
+            "city": "Unknown",
+            "flag": "🌐",
+            "display_location": "Sender Location Unavailable",
+            "latitude": None,
+            "longitude": None,
+            "org": "Unknown Network",
+            "asn": "None",
+            "db_provider": "N/A",
+            "status": "No public sender IP found",
+            "dns_intelligence": dns_intel,
+            "attribution_disclaimer": attribution_disclaimer,
+            "relay_masked_explanation": relay_masked_explanation
+        }
+
+    geo = get_geolocation(sender_ip)
+    city = geo.get("city") or "Unknown"
+    region = geo.get("region") or "Unknown"
+    country = geo.get("country") or "Unknown"
+    flag = get_country_flag(country)
+
+    loc_parts = [p for p in [city, region, country] if p and p != "UNKNOWN"]
+    display_loc = f"{', '.join(loc_parts)} {flag}" if loc_parts else f"Unknown Location {flag}"
+
+    return {
+        "sender_address": sender_address_disp,
+        "sender_email": sender_email or "Unknown",
+        "sender_display_name": display_name,
+        "return_path": return_path_disp,
+        "return_path_differs": return_path_differs,
+        "sender_ip": sender_ip,
+        "ip_classification": telem["classification"],
+        "ip_source": telem["source"],
+        "raw_header_evidence": telem["raw_evidence"],
+        "is_identified": True,
+        "is_client_ip": telem["is_client_ip"],
+        "country": country,
+        "region": region,
+        "city": city,
+        "flag": flag,
+        "display_location": display_loc,
+        "latitude": geo.get("latitude"),
+        "longitude": geo.get("longitude"),
+        "org": geo.get("org") or "Unknown ISP",
+        "asn": geo.get("asn") or "Unknown ASN",
+        "db_provider": geo.get("db_provider"),
+        "status": geo.get("status"),
+        "dns_intelligence": dns_intel,
+        "attribution_disclaimer": attribution_disclaimer,
+        "relay_masked_explanation": relay_masked_explanation
+    }
+

@@ -225,7 +225,7 @@ def analyze_relay_transit(received_chain: List[str]) -> Dict[str, Any]:
                 
                 if diff < 0:
                     curr["delay_display"] = f"⚠️ {int(diff)}s (Negative Delta)"
-                    anom_msg = f"Hop #{curr['hop_number']} has negative transit delay ({int(diff)}s) compared to Hop #{prev['hop_number']}. Probable forged header or severe MTA clock drift."
+                    anom_msg = f"Hop #{curr['hop_number']} (Negative Delta: {int(diff)}s vs Hop #{prev['hop_number']}): Negative hop delta detected — possible clock skew, timestamp inconsistency, or header anomaly; requires investigation."
                     anomalies.append(anom_msg)
                 elif diff > 3600:
                     hours = diff / 3600

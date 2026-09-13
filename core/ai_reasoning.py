@@ -19,7 +19,7 @@ def generate_forensic_reasoning(
     # Analyze rule triggers for MITRE mapping
     finding_texts = [getattr(r, 'finding', '') if hasattr(r, 'finding') else r.get('finding', '') for r in rule_findings]
     
-    if any("Urgency" in f or "Credential" in f for f in finding_texts):
+    if any("urgency" in f.lower() or "credential" in f.lower() or "link" in f.lower() or "phishing" in f.lower() for f in finding_texts):
         mitre_ttps.append("T1566.002 - Phishing: Spearphishing Link / Social Engineering")
     if any("attachment" in f.lower() for f in finding_texts):
         mitre_ttps.append("T1566.001 - Phishing: Spearphishing Attachment")

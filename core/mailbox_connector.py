@@ -67,68 +67,87 @@ def fetch_imap_emails(
     Guaranteed non-blocking with socket timeouts and contiguous range optimization.
     """
     clean_pwd = password.replace(" ", "").strip()
-    mail = imaplib.IMAP4_SSL(host, port, timeout=15.0)
+    try:
+        mail = imaplib.IMAP4_SSL(host, port, timeout=35.0)
+    except Exception as e:
+        return []
+
     try:
         mail.login(email_addr.strip(), clean_pwd)
         status, select_data = mail.select("INBOX", readonly=True)
         if status != "OK":
             return []
 
-        # Search criteria
-        search_criteria = "ALL"
-        if query and "newer_than:1d" in query:
-            since_date = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%d-%b-%Y")
-            search_criteria = f'(SINCE "{since_date}")'
-
-        status, messages = mail.search(None, search_criteria)
-        if (status != "OK" or not messages or not messages[0]) and search_criteria != "ALL":
-            # Fallback to ALL if date search yielded nothing
-            status, messages = mail.search(None, "ALL")
-
-        if status != "OK" or not messages or not messages[0]:
-            return []
-
-        msg_ids = messages[0].split()
-        if not msg_ids:
-            return []
-
-        # Safe limit cap to prevent browser/thread freeze on massive inboxes
         effective_limit = max_results if (max_results and max_results > 0) else 50
         effective_limit = min(effective_limit, 300)
-
-        # Take the most recent messages (which are at the end of msg_ids) in ascending order
-        target_ids = msg_ids[-effective_limit:]
-        if not target_ids:
-            return []
-
         results_map: Dict[str, Dict[str, str]] = {}
+        target_ids: List[bytes] = []
 
-        # Check if contiguous sequence numbers (standard for ALL search)
-        first_id = int(target_ids[0])
-        last_id = int(target_ids[-1])
-        is_contiguous = (last_id - first_id + 1 == len(target_ids))
+        # Optimization: If no search query, use instant range query on mailbox count
+        total_msgs = 0
+        if select_data and select_data[0]:
+            try:
+                total_msgs = int(select_data[0].decode('utf-8').strip())
+            except Exception:
+                total_msgs = 0
 
-        if is_contiguous:
-            # Single ultra-fast range fetch: e.g. "951:1000" in 1 roundtrip
+        if not query and total_msgs > 0:
+            first_id = max(1, total_msgs - effective_limit + 1)
+            last_id = total_msgs
             range_str = f"{first_id}:{last_id}"
             try:
                 res, data = mail.fetch(range_str, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])')
                 if res == "OK" and data:
                     _parse_fetch_items(data, results_map)
+                    target_ids = [str(i).encode('utf-8') for i in range(first_id, last_id + 1)]
             except Exception:
-                pass
-        else:
-            # Non-contiguous IDs: chunk in ascending batches of 50
-            chunk_size = 50
-            for i in range(0, len(target_ids), chunk_size):
-                chunk = target_ids[i:i + chunk_size]
+                target_ids = []
+
+        # Fallback to search if query is specified or direct range yielded nothing
+        if not results_map:
+            search_criteria = "ALL"
+            if query and "newer_than:1d" in query:
+                since_date = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%d-%b-%Y")
+                search_criteria = f'(SINCE "{since_date}")'
+
+            status, messages = mail.search(None, search_criteria)
+            if (status != "OK" or not messages or not messages[0]) and search_criteria != "ALL":
+                status, messages = mail.search(None, "ALL")
+
+            if status != "OK" or not messages or not messages[0]:
+                return []
+
+            msg_ids = messages[0].split()
+            if not msg_ids:
+                return []
+
+            target_ids = msg_ids[-effective_limit:]
+            if not target_ids:
+                return []
+
+            first_id = int(target_ids[0])
+            last_id = int(target_ids[-1])
+            is_contiguous = (last_id - first_id + 1 == len(target_ids))
+
+            if is_contiguous:
+                range_str = f"{first_id}:{last_id}"
                 try:
-                    chunk_set = b','.join(chunk)
-                    res, data = mail.fetch(chunk_set, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])')
+                    res, data = mail.fetch(range_str, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])')
                     if res == "OK" and data:
                         _parse_fetch_items(data, results_map)
                 except Exception:
-                    continue
+                    pass
+            else:
+                chunk_size = 50
+                for i in range(0, len(target_ids), chunk_size):
+                    chunk = target_ids[i:i + chunk_size]
+                    try:
+                        chunk_set = b','.join(chunk)
+                        res, data = mail.fetch(chunk_set, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])')
+                        if res == "OK" and data:
+                            _parse_fetch_items(data, results_map)
+                    except Exception:
+                        continue
 
         # Reassemble in reverse chronological order (newest emails first)
         results = []
@@ -138,6 +157,10 @@ def fetch_imap_emails(
                 results.append(results_map[mid_str])
 
         return results
+    except (socket.timeout, TimeoutError):
+        return []
+    except Exception:
+        return []
 
     finally:
         try:
@@ -181,9 +204,13 @@ def fetch_imap_raw_email(
     port: int = 993,
     msg_id: str = "1"
 ) -> bytes:
-    """Fetches the complete raw RFC822 bytes of a specific email by ID with a 15s timeout."""
+    """Fetches the complete raw RFC822 bytes of a specific email by ID with a 35s timeout."""
     clean_pwd = password.replace(" ", "").strip()
-    mail = imaplib.IMAP4_SSL(host, port, timeout=15.0)
+    try:
+        mail = imaplib.IMAP4_SSL(host, port, timeout=35.0)
+    except Exception:
+        return b""
+
     try:
         mail.login(email_addr.strip(), clean_pwd)
         mail.select("INBOX", readonly=True)
@@ -192,6 +219,8 @@ def fetch_imap_raw_email(
             for response_part in data:
                 if isinstance(response_part, tuple):
                     return response_part[1]
+        return b""
+    except Exception:
         return b""
     finally:
         try:

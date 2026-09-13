@@ -10,7 +10,7 @@ import requests
 from core.parser import SecureEmailParser
 from core.indicators import extract_all_indicators
 from core.auth_claims import parse_auth_results, evaluate_auth_and_alignment
-from core.geolocation import get_geolocation
+from core.geolocation import get_geolocation, get_sender_location
 from core.risk import evaluate_rules, calculate_hybrid_risk
 from core.domain_reputation import get_domain_reputation
 from core.url_forensics import analyze_all_urls, defang_url
@@ -77,17 +77,20 @@ def format_threat_alert_text(threat_info: Dict[str, Any]) -> str:
     risk = threat_info.get("risk_score", "HIGH")
     subject = mask_sensitive_subject(threat_info.get("subject", "No Subject"))
     sender = threat_info.get("sender", "Unknown Sender")
+    sender_loc = threat_info.get("sender_location")
     score = threat_info.get("risk_score_numeric", 85)
     reasons = threat_info.get("risk_reasons", [])
     now_str = datetime.datetime.now().strftime("%d-%b-%Y %I:%M %p")
 
     reason_lines = "\n".join([f"• {r}" for r in reasons[:3]]) if reasons else "• Critical phishing heuristics identified."
+    loc_line = f"📍 *Origin*: {sender_loc}\n" if sender_loc else ""
 
     alert_msg = (
         f"🚨 *EMAILSHIELD CRITICAL SECURITY ALERT* 🚨\n\n"
         f"⚠️ *Malicious Email Detected in Your Mailbox!*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📧 *Sender*: {sender}\n"
+        f"{loc_line}"
         f"📌 *Subject*: \"{subject[:55]}\"\n"
         f"🎯 *Verdict*: 🔴 {risk} RISK ({score}/100)\n\n"
         f"🔍 *Key Forensic Findings*:\n"
@@ -277,7 +280,7 @@ class SentinelManager:
                 "alert_config": alert_config
             }
             self.ml_classifier = ml_classifier
-            self.state.poll_interval_seconds = max(15, poll_interval)
+            self.state.poll_interval_seconds = max(10, poll_interval)
             self._stop_event.clear()
             self.state.is_running = True
             self.state.status_message = "Initializing mailbox checkpoint..."
@@ -301,7 +304,7 @@ class SentinelManager:
             # Spawn daemon thread
             self._thread = threading.Thread(target=self._worker_loop, daemon=True)
             self._thread.start()
-            return True, "Live Mailbox Sentinel activated. Polling every 50 seconds."
+            return True, f"Live Mailbox Sentinel activated. Polling every {self.state.poll_interval_seconds} seconds."
 
     def stop(self) -> Tuple[bool, str]:
         """Gracefully halts the background sentinel thread."""
@@ -319,16 +322,24 @@ class SentinelManager:
     # -----------------------------------------------------------------
 
     def _worker_loop(self):
-        """Main execution thread loop ticking every 50 seconds."""
+        """Main execution thread loop ticking on configured poll interval."""
         while not self._stop_event.is_set():
             cycle_start = time.time()
             try:
                 self._execute_scan_cycle()
-            except Exception as e:
+                # On successful scan cycle, clear transient read timeouts from error_log
                 with self._lock:
-                    err = f"Sentinel scan error: {str(e)}"
-                    self.state.error_log.append(err)
-                    self.state.status_message = f"Warning: {str(e)[:60]}"
+                    self.state.error_log = [e for e in self.state.error_log if "timed out" not in e.lower()]
+            except Exception as e:
+                err_str = str(e)
+                with self._lock:
+                    if "timed out" in err_str.lower():
+                        err = f"Notice: Mailbox read operation timed out (auto-retrying on next cycle): {err_str[:70]}"
+                    else:
+                        err = f"Sentinel scan error: {err_str}"
+                    if err not in self.state.error_log:
+                        self.state.error_log.append(err)
+                    self.state.status_message = f"Warning: {err_str[:60]}"
 
             # Responsive sleep countdown (checks _stop_event every 1s)
             poll_time = self.state.poll_interval_seconds
@@ -505,12 +516,46 @@ class SentinelManager:
         rule_findings = [RuleFinding(**r) for r in rule_results]
         risk_score, reasons = calculate_hybrid_risk(rule_results, ml_prob, auth_alignment=auth_alignment)
 
-        # Numeric score estimate for alerts
-        score_val = 15
+        # 11b. Dynamic Continuous Threat Score Calculation
+        base_ml_score = int(ml_prob * 100)
+        rule_penalty = 0
+        for r in rule_findings:
+            sev = getattr(r, 'severity', 'LOW')
+            if sev == "HIGH":
+                rule_penalty += 32
+            elif sev == "MEDIUM":
+                rule_penalty += 14
+            elif sev == "LOW":
+                rule_penalty += 4
+
+        if auth_alignment and auth_alignment.get("effective_dmarc") in ["PASS", "PASS (Delegated ESP)"]:
+            rule_penalty = max(0, rule_penalty - 8)
+        elif auth_alignment and auth_alignment.get("effective_dmarc") == "FAIL":
+            rule_penalty += 15
+
+        raw_score = int(0.4 * base_ml_score + 0.6 * min(100, rule_penalty))
+
         if risk_score == "HIGH":
-            score_val = int(75 + min(25, len(reasons) * 8))
+            score_val = max(75, min(99, max(raw_score, 75 + min(24, len(reasons) * 6))))
         elif risk_score == "SUSPICIOUS":
-            score_val = 50
+            score_val = max(40, min(74, max(raw_score, 45 + min(25, len(reasons) * 5))))
+        else:
+            # Dynamic variance reflecting low-level ML variance and benign characteristics
+            score_val = max(2, min(35, raw_score if raw_score > 0 else int(base_ml_score * 0.25 + 4)))
+
+        # Parse email arrival timestamp from header and convert to local time
+        email_raw_date = str(msg_item.get("date", headers.get("date", "")))
+        clean_email_time = "Unknown"
+        if email_raw_date and email_raw_date != "Unknown Date":
+            try:
+                import email.utils
+                parsed_dt = email.utils.parsedate_to_datetime(email_raw_date)
+                local_dt = parsed_dt.astimezone()
+                clean_email_time = local_dt.strftime("%d-%b %I:%M %p")
+            except Exception:
+                clean_email_time = email_raw_date[:20]
+
+        scan_time = datetime.datetime.now().strftime("%I:%M:%S %p")
 
         # Update statistics & checkpoint
         with self._lock:
@@ -526,7 +571,7 @@ class SentinelManager:
             self.state.checkpoint_id = msg_id
             self.state.checkpoint_subject = mask_sensitive_subject(subject)
             self.state.checkpoint_sender = sender
-            self.state.checkpoint_date = str(msg_item.get("date", datetime.datetime.now().strftime("%Y-%m-%d %H:%M")))
+            self.state.checkpoint_date = clean_email_time if clean_email_time != "Unknown" else str(msg_item.get("date", datetime.datetime.now().strftime("%Y-%m-%d %H:%M")))
 
         alert_dispatched = False
         alert_details = ""
@@ -535,10 +580,13 @@ class SentinelManager:
         if risk_score == "HIGH":
             # Save automatically into Case Store
             case_id = f"CASE-{uuid.uuid4().hex[:8].upper()}"
+            sender_loc_info = get_sender_location(headers, parsed_data.get("received_chain", []))
+            sender_loc_disp = sender_loc_info.get("display_location") if sender_loc_info.get("is_identified") else None
             threat_payload = {
                 "case_id": case_id,
                 "subject": mask_sensitive_subject(subject),
                 "sender": sender,
+                "sender_location": sender_loc_disp,
                 "risk_score": risk_score,
                 "risk_score_numeric": score_val,
                 "risk_reasons": reasons
@@ -575,7 +623,9 @@ class SentinelManager:
 
         # Record into recent activity feed (with sensitive tokens masked)
         activity_entry = {
-            "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+            "email_date": clean_email_time,
+            "scan_time": scan_time,
+            "timestamp": clean_email_time if clean_email_time != "Unknown" else scan_time,
             "subject": mask_sensitive_subject(subject),
             "sender": sender,
             "verdict": risk_score,

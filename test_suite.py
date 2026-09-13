@@ -152,7 +152,7 @@ print("Forgeries Detected:", diff_out["forgery_count"])
 assert diff_out["forgery_count"] >= 2
 assert "CRITICAL SPOOFING" in diff_out["verdict"]
 
-print("\n--- TEST 13: I4C / NCRP Complaint Packager & Section 65B PDF ---")
+print("\n--- TEST 13: I4C / NCRP-Oriented Evidence Pack & Electronic Evidence Annexure ---")
 from core.ncrp_packager import generate_ncrp_complaint_text, generate_ncrp_pdf_annexure
 ncrp_case = {
     "case_id": "CASE-NCRP-TEST",
@@ -381,7 +381,119 @@ with zipfile.ZipFile("email-corpus-main.zip", "r") as z:
     assert dhl_risk == "HIGH"
     assert any("RULE-019" in r.get("rule_id", "") or "Anchor" in r.get("finding", "") for r in dhl_rules)
 
-print("\n>>> ALL 16 FORENSIC, CORPUS & SENTINEL TESTS COMPLETED AND PASSED 100%! <<<")
+print("\n--- TEST 17: Originating IP & Geolocation Forensics ---")
+from core.geolocation import extract_originating_sender_ip, get_sender_location, get_country_flag, resolve_hostname_supplementary
+
+# 1. Test Explicit X-Originating-IP
+h_orig = {"x-originating-ip": "[103.21.244.2]", "from": '"PayPal Security" <security@paypal-verify.com>'}
+ip, src = extract_originating_sender_ip(h_orig)
+assert ip == "103.21.244.2"
+assert "x-originating-ip" in src.lower()
+loc1 = get_sender_location(h_orig)
+assert loc1["sender_ip"] == "103.21.244.2"
+assert loc1["ip_classification"] == "Originating/Client IP Evidence"
+assert loc1["is_client_ip"] is True
+assert "x-originating-ip" in loc1["ip_source"].lower()
+assert "x-originating-ip" in loc1["raw_header_evidence"].lower()
+
+# 2. Test X-Sender-IP
+h_sender_ip = {"x-sender-ip": "157.240.241.35", "from": "support@bank.com"}
+loc2 = get_sender_location(h_sender_ip)
+assert loc2["sender_ip"] == "157.240.241.35"
+assert loc2["ip_classification"] == "Originating/Client IP Evidence"
+assert loc2["is_client_ip"] is True
+assert "x-sender-ip" in loc2["ip_source"].lower()
+
+# 3. Test Authentication-Results & Received-SPF client-ip
+h_spf = {"received-spf": "Pass (mailfrom) client-ip=157.240.241.35; designates mx.facebook.com"}
+ip, src = extract_originating_sender_ip(h_spf)
+assert ip == "157.240.241.35"
+assert "client-ip" in src
+loc3 = get_sender_location(h_spf)
+assert loc3["sender_ip"] == "157.240.241.35"
+assert loc3["is_client_ip"] is True
+assert "client-ip" in loc3["ip_source"]
+assert "Authentication" in loc3["ip_classification"]
+
+# 4 & 6. Test Chronological Oldest Hop in Received Chain (Multiple hops & Earliest Public Relay IP)
+h_hops = [
+    "from mail-filter.recipient.com by mx.google.com; Sat, 12 Sep 2026 10:00:00 +0000",
+    "from intermediate.relay.net (192.168.1.5) by mail-filter.recipient.com; Sat, 12 Sep 2026 09:59:50 +0000",
+    "from originating.sender.org (195.154.122.45) by intermediate.relay.net; Sat, 12 Sep 2026 09:59:40 +0000",
+    "from client.local (10.0.0.12) by originating.sender.org; Sat, 12 Sep 2026 09:59:30 +0000"
+]
+ip, src = extract_originating_sender_ip({"received": h_hops})
+assert ip == "195.154.122.45"
+assert "Originating MTA" in src
+loc4 = get_sender_location({"received": h_hops})
+assert loc4["sender_ip"] == "195.154.122.45"
+assert loc4["ip_classification"] == "Earliest Public Relay IP"
+assert loc4["is_client_ip"] is False
+
+# 5. Test Private / RFC1918 / Loopback IP filtering
+sender_loc_internal = get_sender_location({"received": ["from local (192.168.1.1) by local (10.0.0.1)"]})
+assert sender_loc_internal["is_identified"] is False
+assert sender_loc_internal["sender_ip"] == "Not available / Relay-masked"
+assert sender_loc_internal["display_location"] == "Sender Location Unavailable"
+
+# 7. Test Hostname without explicit IP in Received header
+h_host_only = {"received": ["from mail.attacker-server.com by mx.google.com"]}
+loc7 = get_sender_location(h_host_only)
+assert loc7["is_identified"] is False
+assert loc7["sender_ip"] == "Not available / Relay-masked"
+assert loc7["dns_intelligence"]["hostname"] == "mail.attacker-server.com"
+
+# 8. Test DNS-resolved host shown separately as supplementary intelligence (never labeled as Attacker IP)
+dns_res = resolve_hostname_supplementary("dns.google")
+assert dns_res["status"] == "Resolved"
+assert dns_res["resolved_ip"] in ["8.8.8.8", "8.8.4.4"]
+assert "does not prove the historical originating IP" in dns_res["explanation"]
+dns_fail = resolve_hostname_supplementary("nonexistent.invalid.example.test")
+assert dns_fail["status"] == "Unavailable"
+assert dns_fail["display_label"] == "DNS Intelligence: Unavailable"
+
+# 9. Test No public IP -> Relay-masked with exact required explanation
+loc9 = get_sender_location({"from": "user@example.com"})
+assert loc9["sender_ip"] == "Not available / Relay-masked"
+assert loc9["is_identified"] is False
+assert "The available email telemetry does not expose a reliable public client/originating IP" in loc9["relay_masked_explanation"]
+
+# 10. Test Sender Address displayed (From: display name + email address)
+loc10 = get_sender_location({"from": '"PayPal Security" <security@paypal-verify.com>'})
+assert "PayPal Security" in loc10["sender_address"]
+assert "security@paypal-verify.com" in loc10["sender_address"]
+assert loc10["sender_email"] == "security@paypal-verify.com"
+assert loc10["sender_display_name"] == "PayPal Security"
+
+# 11. Test Return-Path / Envelope Sender comparison and mismatch detection
+loc11 = get_sender_location({"from": "ceo@corporate.com", "return-path": "<attacker@evil-divert.com>"})
+assert loc11["return_path_differs"] is True
+assert loc11["return_path"] == "attacker@evil-divert.com"
+loc11_same = get_sender_location({"from": "billing@corp.com", "return-path": "<billing@corp.com>"})
+assert loc11_same["return_path_differs"] is False
+
+# 12. Test Geo-IP lookup resolution
+loc12 = get_sender_location({"x-originating-ip": "103.21.244.2"})
+print(f"Sender Location Result: IP={loc12['sender_ip']} | Display='{loc12['display_location']}' | Source='{loc12['ip_source']}'")
+assert loc12["is_identified"] is True
+assert loc12["sender_ip"] == "103.21.244.2"
+assert loc12["country"] != "Unknown"
+assert loc12["flag"] != ""
+assert loc12["org"] != "Unknown ISP"
+
+# 13. Test Correct forensic attribution disclaimer
+assert "Geo-IP provides approximate geographic/infrastructure context" in loc12["attribution_disclaimer"]
+assert "does not prove the physical location or identity of the human sender" in loc12["attribution_disclaimer"]
+
+# 14. Test Evidence Source & Flag Mapping
+assert loc12["ip_source"] == "Header 'x-originating-ip'"
+assert "x-originating-ip" in loc12["raw_header_evidence"].lower()
+assert get_country_flag("India") == "🇮🇳"
+assert get_country_flag("United States") == "🇺🇸"
+assert get_country_flag("NonExistentCountry") == "🌐"
+print("Originating IP & Geolocation 14-point forensic tests passed!")
+
+print("\n>>> ALL 17 FORENSIC, CORPUS & SENTINEL TESTS COMPLETED AND PASSED 100%! <<<")
 
 
 
