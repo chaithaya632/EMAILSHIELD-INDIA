@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 from core.gmail_integration import fetch_recent_emails, fetch_raw_email
 from core.parser import SecureEmailParser
 from core.risk import evaluate_rules, calculate_hybrid_risk
+from core.auth_claims import evaluate_auth_and_alignment
 
 def clean_email_text(raw_text: str) -> str:
     """Strip HTML tags, CSS style blocks, scripts, and decode entities."""
@@ -197,18 +198,20 @@ def scan_mailbox_batch(
             parser = SecureEmailParser(raw_bytes)
             parsed_data = parser.parse()
             
-            subject = str(parsed_data.get("headers", {}).get("subject", msg['subject']))
+            headers = parsed_data.get("headers", {})
+            subject = str(headers.get("subject", msg['subject']))
             body = parsed_data.get("body", "")
-            
-            ml_pred = ml_classifier.predict(subject, body)
-            rule_results = evaluate_rules(parsed_data)
-            risk_score, reasons = calculate_hybrid_risk(rule_results, ml_pred["probability"])
             
             if "content_categories" not in analytics:
                 analytics["content_categories"] = {}
                 
-            content_type = categorize_content(subject, body, msg['sender'], headers=parsed_data.get("headers", {}))
+            content_type = categorize_content(subject, body, msg['sender'], headers=headers)
             analytics["content_categories"][content_type] = analytics["content_categories"].get(content_type, 0) + 1
+            
+            auth_res = evaluate_auth_and_alignment(headers)
+            ml_pred = ml_classifier.predict(subject, body)
+            rule_results = evaluate_rules(parsed_data, auth_alignment=auth_res, content_type=content_type)
+            risk_score, reasons = calculate_hybrid_risk(rule_results, ml_pred["probability"], auth_alignment=auth_res, content_type=content_type)
             
             category = "Clean"
             if risk_score == "HIGH":

@@ -9,7 +9,8 @@ def evaluate_rules(
     attachment_analyses: Any = None,
     lookalike_analysis: Any = None,
     bec_telemetry: Any = None,
-    relay_transit: Any = None
+    relay_transit: Any = None,
+    content_type: Any = None
 ) -> List[Dict[str, str]]:
     findings = []
     headers = parsed_email.get("headers", {})
@@ -20,7 +21,8 @@ def evaluate_rules(
         headers.get("list-unsubscribe") or
         headers.get("list-id") or
         str(headers.get("precedence", "")).lower() == "bulk" or
-        headers.get("feedback-id")
+        headers.get("feedback-id") or
+        (content_type and any(c in str(content_type) for c in ["Newsletter", "Promotional", "Subscription", "Marketing"]))
     )
 
     # 1. Reply-To Mismatch
@@ -348,13 +350,67 @@ def evaluate_rules(
     # 13. Hyperlink Anchor Text Spoofing
     from core.indicators import extract_anchor_spoofs
     anchor_spoofs = extract_anchor_spoofs(parsed_email.get("body", ""))
+    
+    SENSITIVE_TARGET_BRANDS = {
+        "microsoft", "office", "live", "outlook", "google", "gmail", "apple", "icloud",
+        "paypal", "chase", "wellsfargo", "bankofamerica", "citi", "sbi", "hdfc", "icici",
+        "axisbank", "kotak", "pnbindia", "incometax", "dhl", "fedex", "ups", "amazon",
+        "netflix", "dropbox", "onedrive"
+    }
+    COMMON_SOCIAL_PLATFORMS = {
+        "linkedin.com", "twitter.com", "x.com", "facebook.com", "instagram.com",
+        "youtube.com", "t.me", "telegram.org", "discord.com", "reddit.com", "quora.com",
+        "github.com"
+    }
+
+    from_addr = extract_email(headers.get("from", ""))
+    sender_root = get_base_domain(from_addr)
+    return_path_root = get_base_domain(extract_email(headers.get("return-path", "")))
+
+    has_cred_lure = any(f.get("rule_id") in ["RULE-006", "RULE-020", "RULE-021"] for f in findings)
+    has_urgency_lure = any(f.get("rule_id") == "RULE-007" and f.get("severity") in ["HIGH", "MEDIUM"] for f in findings)
+
     for sp in anchor_spoofs:
+        disp_dom = sp.get('displayed_domain', '')
+        disp_root = sp.get('displayed_root', disp_dom)
+        act_dom = sp.get('actual_domain', '')
+        act_root = sp.get('actual_root', act_dom)
+
+        is_sensitive = any(b in disp_root for b in SENSITIVE_TARGET_BRANDS)
+        is_brand_dest_aligned = bool(disp_root and (disp_root in act_root or act_root in disp_root))
+        is_sender_brand_aligned = bool(sender_root and (disp_root in sender_root or sender_root in disp_root))
+        is_sender_aligned = bool(sender_root and (sender_root in act_root or act_root in sender_root)) or \
+                            bool(return_path_root and (return_path_root in act_root or act_root in return_path_root))
+        is_social = (disp_root in COMMON_SOCIAL_PLATFORMS) or any(s in disp_root for s in COMMON_SOCIAL_PLATFORMS)
+
+        if is_sensitive and not is_brand_dest_aligned and not is_sender_brand_aligned and not is_sender_aligned:
+            sp_severity = "HIGH"
+            explanation = "Adversary masked a sensitive institutional brand address using a false visible target."
+        elif not auth_ok and not is_sender_aligned and not is_social:
+            sp_severity = "HIGH"
+            explanation = "Unauthenticated message contains deceptive anchor routing away from apparent visible host."
+        elif has_cred_lure and not is_sender_aligned:
+            sp_severity = "HIGH"
+            explanation = "Adversary paired credential/payment request with deceptive hyperlink anchor."
+        elif auth_ok and is_newsletter and is_social:
+            sp_severity = "LOW"
+            explanation = "Standard social/community platform reference wrapped in authorized ESP click tracker."
+        elif auth_ok and is_sender_aligned:
+            sp_severity = "LOW"
+            explanation = "Hyperlink routed via tracking infrastructure aligned with authenticated sender organization."
+        elif auth_ok and is_newsletter and not has_cred_lure:
+            sp_severity = "LOW"
+            explanation = "Outbound reference link wrapped in bulk email delivery provider tracking domain."
+        else:
+            sp_severity = "MEDIUM"
+            explanation = "Hyperlink destination differs from visible text. Review target before navigating."
+
         findings.append({
             "rule_id": "RULE-019",
-            "finding": f"Hyperlink Anchor Spoof ({sp.get('displayed_domain')})",
-            "evidence": f"Displayed domain: '{sp.get('displayed_domain')}' | Actual destination: '{sp.get('actual_destination')[:55]}...'",
-            "severity": "HIGH",
-            "explanation": "Adversary masked an external target address using a false visible brand domain."
+            "finding": f"Hyperlink Anchor Spoof ({disp_dom})",
+            "evidence": f"Displayed domain: '{disp_dom}' | Actual destination: '{sp.get('actual_destination')[:55]}...'",
+            "severity": sp_severity,
+            "explanation": explanation
         })
 
     return findings
@@ -362,7 +418,8 @@ def evaluate_rules(
 def calculate_hybrid_risk(
     rule_findings: List[Dict[str, str]],
     ml_prob: float,
-    auth_alignment: Any = None
+    auth_alignment: Any = None,
+    content_type: Any = None
 ) -> tuple[str, List[str]]:
     risk_score = "LOW"
     reasons = []
