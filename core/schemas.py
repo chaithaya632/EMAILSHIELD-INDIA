@@ -146,9 +146,10 @@ class CaseReport(BaseModel):
     analyst_notes: str = ""
     case_severity: str = "MEDIUM"
     
-    # Forensic Classification & Veridct
+    # Forensic Classification & Verdict
     threat_verdict: str = "Legitimate"
     verdict_confidence: int = 80
+    content_type: str = "Personal / Direct Mail"
     
     forwarded_by: Optional[str] = None
     ingestion_source: str = "Direct Analysis"  # Direct Analysis, Gmail API, Forward-to-Verify

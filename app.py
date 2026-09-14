@@ -20,7 +20,7 @@ from core.attachments import analyze_all_attachments
 from core.lookalike import detect_lookalike_domain
 from core.bec_detector import detect_bec_and_impersonation
 from core.gmail_integration import fetch_recent_emails, fetch_raw_email
-from core.batch_scanner import scan_mailbox_batch
+from core.batch_scanner import scan_mailbox_batch, categorize_content
 from core.mailbox_connector import test_imap_connection, fetch_imap_emails, fetch_imap_raw_email, PROVIDER_CONFIGS, get_provider_host
 from core.domain_reputation import get_domain_reputation
 from core.relay_tracer import build_relay_flight_map, analyze_relay_transit
@@ -1017,6 +1017,7 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
         if risk_score == "LOW" and threat_v in ["Business Email Compromise (BEC / Wire Fraud)", "Executive Impersonation", "Credential Harvesting", "Malware Delivery"]:
             threat_v = "Standard / Legitimate"
         verdict_c = bec_obj.confidence_pct if bec_obj else (90 if risk_score == "HIGH" else 85)
+        content_type_val = categorize_content(subject, body, sender_val, headers=headers)
 
         case_report = CaseReport(
             case_id=case_id,
@@ -1024,6 +1025,7 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             original_sha256=parsed_data["sha256"],
             subject=subject,
             sender=sender_val,
+            content_type=content_type_val,
             status=current_status,
             assigned_investigator=current_inv,
             analyst_notes=current_notes,
@@ -1109,7 +1111,7 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                 col_safe1, col_safe2, col_safe3 = st.columns([2, 1, 1])
                 with col_safe1:
                     st.markdown(f"**Classification:** `{case_report.threat_verdict}`")
-                    st.caption(f"Case ID: `{case_id}` | Source: `{case_report.ingestion_source}`")
+                    st.caption(f"📁 Category: **`{case_report.content_type}`** | Case ID: `{case_id}` | Source: `{case_report.ingestion_source}`")
                 with col_safe2:
                     st.metric("Safety Confidence", f"{case_report.verdict_confidence}%")
                 with col_safe3:
@@ -1223,7 +1225,7 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                 col_verdict1, col_verdict2, col_verdict3 = st.columns([2, 1, 1])
                 with col_verdict1:
                     st.markdown(f"### 🎯 Threat Verdict: **{case_report.threat_verdict}**")
-                    st.caption(f"Case ID: `{case_id}` | Source: `{case_report.ingestion_source}`")
+                    st.caption(f"📁 Category: **`{case_report.content_type}`** | Case ID: `{case_id}` | Source: `{case_report.ingestion_source}`")
                 with col_verdict2:
                     st.metric("Confidence", f"{case_report.verdict_confidence}%")
                 with col_verdict3:

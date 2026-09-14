@@ -88,7 +88,7 @@ assistance for complaint preparation and does not constitute a guarantee of stat
 ================================================================================
 DIRECTIONS FOR INVESTIGATOR:
 Copy and paste the above fields directly into https://cybercrime.gov.in portal complaint form.
-Issue immediate Section 91 CrPC notice to the intermediary ISP ({geo.get('org', 'Provider')})
+Issue immediate Section 94 BNSS notice to the intermediary ISP ({geo.get('org', 'Provider')})
 and freeze the suspect UPI/Bank accounts ({upi_str}) via the 1930 Cyber Fraud Helpline.
 ================================================================================
 """
@@ -162,7 +162,7 @@ def generate_ncrp_pdf_annexure(case_data: Dict[str, Any], output_path: str) -> s
         [
             Paragraph("<b>Bank Account No(s):</b>", body_style),
             Paragraph(safe(", ".join(fin["bank_accounts"]) or "None detected"), badge_style if fin["bank_accounts"] else body_style),
-            Paragraph("Issue Section 91 CrPC notice to beneficiary bank", body_style)
+            Paragraph("Issue Section 94 BNSS notice to beneficiary bank", body_style)
         ],
         [
             Paragraph("<b>IFSC Codes & Banks:</b>", body_style),
