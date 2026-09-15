@@ -8,8 +8,7 @@ from core.auth_claims import parse_auth_results, evaluate_auth_and_alignment
 from core.geolocation import get_geolocation, get_sender_location, is_public_ip
 from core.risk import evaluate_rules, calculate_hybrid_risk
 from core.classifier import MLClassifier
-from core.case_store import save_case, get_all_cases, update_case_metadata, get_case_record, export_case_iocs_csv, export_case_iocs_json
-from core.correlation import build_correlation_graph, get_campaign_clusters
+from core.case_store import save_case, update_case_metadata, get_case_record, export_case_iocs_csv, export_case_iocs_json
 from core.report import generate_pdf_report, generate_json_report
 from core.schemas import (
     CaseReport, Indicator, GeolocationInfo, AuthEvidence, RuleFinding,
@@ -19,41 +18,21 @@ from core.schemas import (
 from core.attachments import analyze_all_attachments
 from core.lookalike import detect_lookalike_domain
 from core.bec_detector import detect_bec_and_impersonation
-from core.gmail_integration import fetch_recent_emails, fetch_raw_email
 from core.batch_scanner import scan_mailbox_batch, categorize_content
 from core.mailbox_connector import test_imap_connection, fetch_imap_emails, fetch_imap_raw_email, PROVIDER_CONFIGS, get_provider_host
 from core.domain_reputation import get_domain_reputation
 from core.relay_tracer import build_relay_flight_map, analyze_relay_transit
 from core.ai_reasoning import generate_forensic_reasoning
 from core.agent import AutonomousForensicAgent
-from core.session_vault import (
-    load_session_credentials,
-    save_session_credentials,
-    save_account_credentials,
-    list_saved_accounts,
-    get_account_credentials,
-    switch_active_account,
-    forget_account,
-    clear_session_credentials,
-    save_account_alert_config,
-    get_account_alert_config
-)
 from core.indian_banking import extract_indian_financial_indicators
 from core.quishing import scan_for_quishing
 from core.eml_sanitizer import sanitize_eml_content
 from core.header_diff import compare_headers_against_baseline, BRAND_BASELINES
 from core.ncrp_packager import generate_ncrp_complaint_text, generate_ncrp_pdf_annexure
+from core.sentinel import mask_sensitive_subject
 import plotly.express as px
 import sys
 import importlib
-
-# Resilient Sentinel import with live cache reload protection for Streamlit Cloud
-try:
-    from core.sentinel import sentinel_manager, send_test_alert, mask_sensitive_subject
-except ImportError:
-    if "core.sentinel" in sys.modules:
-        importlib.reload(sys.modules["core.sentinel"])
-    from core.sentinel import sentinel_manager, send_test_alert, mask_sensitive_subject
 
 st.set_page_config(page_title="EMAILSHIELD INDIA", layout="wide")
 
@@ -65,36 +44,6 @@ def load_ml_classifier():
 ml_classifier = load_ml_classifier()
 forensic_agent = AutonomousForensicAgent(ml_classifier)
 
-# Automatically restore saved 14-day hardware-bound encrypted session vault
-if "mailbox_connected" not in st.session_state:
-    saved_session = get_account_credentials()
-    if saved_session:
-        st.session_state["mailbox_connected"] = True
-        st.session_state["mailbox_type"] = "IMAP"
-        st.session_state["mailbox_creds"] = {
-            "email": saved_session["email"],
-            "pwd": saved_session["pwd"],
-            "host": saved_session["host"],
-            "provider": saved_session.get("provider", "Gmail")
-        }
-        st.session_state["session_days_left"] = saved_session.get("days_remaining", 14)
-        
-        # Automatically restore saved bot alert settings from encrypted vault
-        saved_alerts = saved_session.get("alert_config", {})
-        if saved_alerts:
-            if "whatsapp_enabled" in saved_alerts:
-                st.session_state["sentinel_wa_enabled"] = saved_alerts.get("whatsapp_enabled", False)
-            if "whatsapp_phone" in saved_alerts:
-                st.session_state["sentinel_wa_phone"] = saved_alerts.get("whatsapp_phone", "")
-            if "whatsapp_apikey" in saved_alerts:
-                st.session_state["sentinel_wa_key"] = saved_alerts.get("whatsapp_apikey", "")
-            if "telegram_enabled" in saved_alerts:
-                st.session_state["sentinel_tg_enabled"] = saved_alerts.get("telegram_enabled", False)
-            if "telegram_token" in saved_alerts:
-                st.session_state["sentinel_tg_token"] = saved_alerts.get("telegram_token", "")
-            if "telegram_chat_id" in saved_alerts:
-                st.session_state["sentinel_tg_cid"] = saved_alerts.get("telegram_chat_id", "")
-
 st.title("🛡️ EMAILSHIELD INDIA")
 st.subheader("AI-Powered Email Threat Detection, Geolocation & Forensic Intelligence Platform")
 
@@ -102,75 +51,12 @@ st.sidebar.header("📬 Connect Mailbox")
 st.sidebar.write("Inspect live inboxes directly without cloud console setup.")
 
 if not st.session_state.get("mailbox_connected", False):
-    saved_accounts = list_saved_accounts()
-    show_new_account_form = True
-    
-    if saved_accounts:
-        st.sidebar.markdown("### 🔒 Saved Mailboxes")
-        st.sidebar.caption("Hardware-bound AES-256 encrypted vault (14-day TTL)")
+    provider_name = st.sidebar.selectbox("Email Service:", ["Gmail", "Outlook / Office 365", "Yahoo Mail", "Zoho Mail", "Custom / Corporate"])
         
-        acc_labels = [f"📧 {a['email']} ({a['provider']})" for a in saved_accounts]
-        acc_labels.append("➕ Connect New Account")
-        
-        sel_idx = len(acc_labels) - 1 if st.session_state.get("add_new_account_mode", False) else 0
-        selected_option = st.sidebar.radio("Select Account:", acc_labels, index=sel_idx, key="saved_acc_radio")
-        
-        if selected_option != "➕ Connect New Account":
-            show_new_account_form = False
-            chosen_idx = acc_labels.index(selected_option)
-            chosen_acc = saved_accounts[chosen_idx]
-            
-            st.sidebar.markdown(
-                f"""
-<div style="background-color: #0f172a; border-left: 4px solid #10b981; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
-<b>Provider:</b> {chosen_acc['provider']}<br>
-<b>Host:</b> <code>{chosen_acc['host']}</code><br>
-<b>Vault Status:</b> 🔒 Active ({chosen_acc['days_remaining']} days left)
-</div>
-""",
-                unsafe_allow_html=True
-            )
-            
-            col_act1, col_act2 = st.sidebar.columns([3, 2])
-            with col_act1:
-                if col_act1.button("🚀 Connect Inbox", type="primary", key="btn_connect_saved"):
-                    creds = switch_active_account(chosen_acc["email"])
-                    if creds:
-                        st.session_state["mailbox_connected"] = True
-                        st.session_state["mailbox_type"] = "IMAP"
-                        st.session_state["mailbox_creds"] = {
-                            "email": creds["email"], "pwd": creds["pwd"], "host": creds["host"], "provider": creds.get("provider", "Gmail")
-                        }
-                        st.session_state["session_days_left"] = creds.get("days_remaining", 14)
-                        saved_alerts = creds.get("alert_config", {})
-                        if saved_alerts:
-                            st.session_state["sentinel_wa_enabled"] = saved_alerts.get("whatsapp_enabled", False)
-                            st.session_state["sentinel_wa_phone"] = saved_alerts.get("whatsapp_phone", "")
-                            st.session_state["sentinel_wa_key"] = saved_alerts.get("whatsapp_apikey", "")
-                            st.session_state["sentinel_tg_enabled"] = saved_alerts.get("telegram_enabled", False)
-                            st.session_state["sentinel_tg_token"] = saved_alerts.get("telegram_token", "")
-                            st.session_state["sentinel_tg_cid"] = saved_alerts.get("telegram_chat_id", "")
-                        st.session_state.pop("recent_emails", None)
-                        st.session_state["add_new_account_mode"] = False
-                        st.rerun()
-            with col_act2:
-                if col_act2.button("🗑️ Forget", key="btn_forget_saved", help="Shred credentials for this account"):
-                    forget_account(chosen_acc["email"])
-                    st.rerun()
-        else:
-            show_new_account_form = True
-
-    if show_new_account_form:
-        if saved_accounts:
-            st.sidebar.markdown("---")
-            st.sidebar.markdown("#### ➕ Connect Another Mailbox")
-            
-        provider_name = st.sidebar.selectbox("Email Service:", ["Gmail", "Outlook / Office 365", "Yahoo Mail", "Zoho Mail", "Custom / Corporate"])
-        
-        # Dynamic 30-Second Setup Guide with direct links
-        if provider_name == "Gmail":
-            st.sidebar.markdown(
-                """
+    # Dynamic 30-Second Setup Guide with direct links
+    if provider_name == "Gmail":
+        st.sidebar.markdown(
+            """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
 <b>⚡ Quick 30s Setup for Gmail:</b><br>
 1️⃣ <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">👉 Click here to open Google App Passwords ↗</a><br>
@@ -180,11 +66,11 @@ if not st.session_state.get("mailbox_connected", False):
 <span style="color: #94a3b8; font-size: 0.9em;">🔒 <b>100% Free &amp; Safe:</b> Requires 2-Step Verification ON. Your real password is never entered or shared.</span>
 </div>
 """,
-                unsafe_allow_html=True
-            )
-        elif provider_name == "Outlook / Office 365":
-            st.sidebar.markdown(
-                """
+            unsafe_allow_html=True
+        )
+    elif provider_name == "Outlook / Office 365":
+        st.sidebar.markdown(
+            """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
 <b>⚡ Quick 30s Setup for Outlook / Hotmail:</b><br>
 1️⃣ <a href="https://account.live.com/proofs/manage/additional" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">👉 Click here to open Microsoft Security ↗</a><br>
@@ -194,11 +80,11 @@ if not st.session_state.get("mailbox_connected", False):
 <span style="color: #94a3b8; font-size: 0.9em;">🔒 <b>100% Free ($0):</b> Revocable anytime from your Microsoft account.</span>
 </div>
 """,
-                unsafe_allow_html=True
-            )
-        elif provider_name == "Yahoo Mail":
-            st.sidebar.markdown(
-                """
+            unsafe_allow_html=True
+        )
+    elif provider_name == "Yahoo Mail":
+        st.sidebar.markdown(
+            """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
 <b>⚡ Quick 30s Setup for Yahoo Mail:</b><br>
 1️⃣ <a href="https://login.yahoo.com/account/security" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">👉 Click here to open Yahoo Security ↗</a><br>
@@ -208,11 +94,11 @@ if not st.session_state.get("mailbox_connected", False):
 <span style="color: #94a3b8; font-size: 0.9em;">🔒 <b>100% Free ($0):</b> Works with any free Yahoo account.</span>
 </div>
 """,
-                unsafe_allow_html=True
-            )
-        elif provider_name == "Zoho Mail":
-            st.sidebar.markdown(
-                """
+            unsafe_allow_html=True
+        )
+    elif provider_name == "Zoho Mail":
+        st.sidebar.markdown(
+            """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
 <b>⚡ Quick 30s Setup for Zoho Mail:</b><br>
 1️⃣ <a href="https://accounts.zoho.com/home#security/app_password" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">👉 Click here to open Zoho Security ↗</a><br>
@@ -222,129 +108,74 @@ if not st.session_state.get("mailbox_connected", False):
 <span style="color: #94a3b8; font-size: 0.9em;">🔒 <b>100% Free ($0):</b> Supports personal (@zoho.com / @zoho.in) and corporate/custom domain Zoho accounts.</span>
 </div>
 """,
-                unsafe_allow_html=True
-            )
-        else:
-            st.sidebar.markdown(
-                """
+            unsafe_allow_html=True
+        )
+    else:
+        st.sidebar.markdown(
+            """
 <div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 0.85em; margin: 8px 0 12px 0;">
 <b>🏢 Corporate / Custom IMAP Setup:</b><br>
 Enter your organization's IMAP host address (e.g., <code>mail.company.com</code>) and your email credentials. Port 993 SSL is standard.
 </div>
 """,
-                unsafe_allow_html=True
-            )
-
-        u_email = st.sidebar.text_input("Email:", placeholder="user@zoho.com" if provider_name == "Zoho Mail" else "user@gmail.com")
-        u_pass = st.sidebar.text_input("App Password:", type="password", help="16-character code created above. Spaces are automatically removed.")
-        
-        with st.sidebar.expander("❓ What is an App Password? Is it safe & free?"):
-            st.markdown(
-                "• **Cost**: **100% Free ($0 / ₹0)** forever. No subscriptions or credit cards.<br>"
-                "• **Security**: Your real account password is **never shared**. An App Password only grants limited email read access.<br>"
-                "• **Control**: You can revoke or delete the App Password from Google/Microsoft/Zoho with one click anytime.<br>"
-                "• **No Developer Accounts**: No Google Cloud Console, no Azure registration, zero technical setup.",
-                unsafe_allow_html=True
-            )
-            
-        c_host = ""
-        if provider_name == "Custom / Corporate":
-            c_host = st.sidebar.text_input("IMAP Host:", placeholder="imap.yourserver.com")
-            
-        remember_me = st.sidebar.checkbox(
-            "🔒 Remember this account for 2 weeks",
-            value=True,
-            help="Encrypted with hardware-bound AES-256 (600,000 PBKDF2 rounds). Automatically expires and shreds after 14 days."
+            unsafe_allow_html=True
         )
+
+    u_email = st.sidebar.text_input("Email:", placeholder="user@zoho.com" if provider_name == "Zoho Mail" else "user@gmail.com")
+    u_pass = st.sidebar.text_input("App Password:", type="password", help="16-character code created above. Spaces are automatically removed.")
+
+    with st.sidebar.expander("❓ What is an App Password? Is it safe & free?"):
+        st.markdown(
+            "• **Cost**: **100% Free ($0 / ₹0)** forever. No subscriptions or credit cards.<br>"
+            "• **Security**: Your real account password is **never shared**. An App Password only grants limited email read access.<br>"
+            "• **Control**: You can revoke or delete the App Password from Google/Microsoft/Zoho with one click anytime.<br>"
+            "• **No Developer Accounts**: No Google Cloud Console, no Azure registration, zero technical setup.",
+            unsafe_allow_html=True
+        )
+
+    c_host = ""
+    if provider_name == "Custom / Corporate":
+        c_host = st.sidebar.text_input("IMAP Host:", placeholder="imap.yourserver.com")
+
+    st.sidebar.caption("🔒 **Ephemeral Session**: Mailbox credentials stay in this browser session only and are never saved to server disk.")
             
-        if st.sidebar.button("Connect Mailbox", type="primary"):
-            if u_email and u_pass:
-                target_host = c_host if provider_name == "Custom / Corporate" else get_provider_host(provider_name, u_email)
-                with st.spinner("Authenticating with mail server..."):
-                    ok, conn_msg = test_imap_connection(u_email, u_pass, target_host)
-                if ok:
-                    if remember_me:
-                        save_account_credentials(u_email, u_pass, target_host, provider_name, days=14)
-                        st.session_state["session_days_left"] = 14
-                    else:
-                        st.session_state.pop("session_days_left", None)
-                    st.session_state["mailbox_connected"] = True
-                    st.session_state["mailbox_type"] = "IMAP"
-                    st.session_state["mailbox_creds"] = {
-                        "email": u_email, "pwd": u_pass, "host": target_host, "provider": provider_name
-                    }
-                    st.session_state.pop("recent_emails", None)
-                    st.session_state["add_new_account_mode"] = False
-                    st.rerun()
-                else:
-                    st.sidebar.error(conn_msg)
+    if st.sidebar.button("Connect Mailbox", type="primary"):
+        if u_email and u_pass:
+            target_host = c_host if provider_name == "Custom / Corporate" else get_provider_host(provider_name, u_email)
+            with st.spinner("Authenticating with mail server..."):
+                ok, conn_msg = test_imap_connection(u_email, u_pass, target_host)
+            if ok:
+                st.session_state["mailbox_connected"] = True
+                st.session_state["mailbox_type"] = "IMAP"
+                st.session_state["mailbox_creds"] = {
+                    "email": u_email, "pwd": u_pass, "host": target_host, "provider": provider_name
+                }
+                st.session_state.pop("recent_emails", None)
+                st.session_state["add_new_account_mode"] = False
+                st.rerun()
             else:
-                st.sidebar.warning("Please enter your email and app password.")
+                st.sidebar.error(conn_msg)
+        else:
+            st.sidebar.warning("Please enter your email and app password.")
 
 if st.session_state.get("mailbox_connected", False):
     m_type = st.session_state.get("mailbox_type", "IMAP")
     creds = st.session_state.get("mailbox_creds", {})
-    disp_email = creds.get("email", "Google OAuth User") if m_type == "IMAP" else "Google Account"
+    disp_email = creds.get("email", "Connected Mailbox")
     
     col_mb1, col_mb2 = st.sidebar.columns([3, 1])
     with col_mb1:
         st.sidebar.write(f"📬 **Connected:** `{disp_email[:20]}`")
-        if st.session_state.get("session_days_left"):
-            days_left = st.session_state["session_days_left"]
-            st.sidebar.caption(f"🔒 Encrypted Vault: **{days_left}d remaining**")
+        st.sidebar.caption("🔒 Session-only memory (ephemeral)")
     with col_mb2:
-        if st.sidebar.button("Disconnect", help="Log out of current view (account stays in saved vault)"):
-            st.session_state["mailbox_connected"] = False
-            st.session_state.pop("recent_emails", None)
-            st.session_state.pop("mailbox_creds", None)
-            st.session_state.pop("session_days_left", None)
+        if st.sidebar.button("Disconnect", help="Disconnect mailbox and purge credentials from session memory"):
+            for k in [
+                "mailbox_connected", "mailbox_creds", "mailbox_type",
+                "recent_emails", "session_days_left", "current_email_bytes",
+                "batch_results", "last_scope_tuple", "add_new_account_mode"
+            ]:
+                st.session_state.pop(k, None)
             st.rerun()
-
-    # Multi-Account Fast Switcher in Sidebar
-    all_saved = list_saved_accounts()
-    other_accounts = [a for a in all_saved if a["email"] != creds.get("email")]
-    
-    if other_accounts or len(all_saved) > 1:
-        with st.sidebar.expander("🔄 Switch Mailbox Account", expanded=False):
-            if other_accounts:
-                switch_opts = [f"{a['email']} ({a['provider']} - {a['days_remaining']}d left)" for a in other_accounts]
-                target_choice = st.selectbox("Switch to saved inbox:", switch_opts, key="sw_account_select")
-                
-                col_sw1, col_sw2 = st.columns([3, 2])
-                with col_sw1:
-                    if col_sw1.button("🚀 Switch", key="btn_do_switch"):
-                        target_email = target_choice.split(" ")[0]
-                        new_creds = switch_active_account(target_email)
-                        if new_creds:
-                            st.session_state["mailbox_connected"] = True
-                            st.session_state["mailbox_type"] = "IMAP"
-                            st.session_state["mailbox_creds"] = {
-                                "email": new_creds["email"], "pwd": new_creds["pwd"], "host": new_creds["host"], "provider": new_creds.get("provider", "Gmail")
-                            }
-                            st.session_state["session_days_left"] = new_creds.get("days_remaining", 14)
-                            st.session_state.pop("recent_emails", None)
-                            st.rerun()
-                with col_sw2:
-                    if col_sw2.button("🗑️ Forget", key="btn_forget_current", help="Shred this account from vault"):
-                        forget_account(disp_email)
-                        st.session_state["mailbox_connected"] = False
-                        st.session_state.pop("recent_emails", None)
-                        st.session_state.pop("mailbox_creds", None)
-                        st.session_state.pop("session_days_left", None)
-                        st.rerun()
-            else:
-                if st.button("🗑️ Forget This Account", key="btn_forget_only", help="Shred credentials from vault"):
-                    forget_account(disp_email)
-                    st.session_state["mailbox_connected"] = False
-                    st.session_state.pop("recent_emails", None)
-                    st.session_state.pop("mailbox_creds", None)
-                    st.session_state.pop("session_days_left", None)
-                    st.rerun()
-                    
-            if st.button("➕ Connect Another Account", key="btn_add_another_connected"):
-                st.session_state["mailbox_connected"] = False
-                st.session_state["add_new_account_mode"] = True
-                st.rerun()
 
     try:
         # Mailbox Scope & Quantity Controls
@@ -375,10 +206,8 @@ if st.session_state.get("mailbox_connected", False):
                             creds["email"], creds["pwd"], creds["host"], max_results=limit_val, query=query_val
                         )
                     else:
-                        fetched = fetch_recent_emails(max_results=limit_val, query=query_val)
-                        if not fetched and query_val:
-                            fetched = fetch_recent_emails(max_results=limit_val)
-                        st.session_state["recent_emails"] = fetched
+                        st.sidebar.error("⚠️ Public Google OAuth is disabled for multi-user security. Please connect via IMAP.")
+                        st.session_state["recent_emails"] = []
                 except Exception as fetch_err:
                     st.sidebar.error(f"Fetch error: {str(fetch_err)}")
                     st.session_state["recent_emails"] = []
@@ -405,10 +234,7 @@ if st.session_state.get("mailbox_connected", False):
                     raw_fetcher_fn=raw_imap_fetcher
                 )
             else:
-                st.session_state["batch_results"] = scan_mailbox_batch(
-                    ml_classifier, max_emails=len(recent_emails), query=query_val, progress_callback=scan_progress,
-                    custom_emails=recent_emails
-                )
+                st.sidebar.error("⚠️ Public OAuth batch scanning is disabled for multi-user security.")
             status_text.text("✅ Scan Complete!")
             st.session_state["active_view_idx"] = 1
             st.rerun()
@@ -446,7 +272,8 @@ if st.session_state.get("mailbox_connected", False):
                         if m_type == "IMAP":
                             bytes_data = fetch_imap_raw_email(creds["email"], creds["pwd"], creds["host"], msg_id=selected_msg_id)
                         else:
-                            bytes_data = fetch_raw_email(selected_msg_id)
+                            st.sidebar.error("⚠️ Public OAuth email fetch is disabled for multi-user security.")
+                            bytes_data = b""
                     st.session_state["batch_results"] = None
                     st.session_state["current_email_bytes"] = bytes_data
                     st.session_state["active_view_idx"] = 0
@@ -516,262 +343,13 @@ if selected_nav == "📊 Today's Mailbox Analytics":
 # View 2: Live Mailbox Sentinel
 elif selected_nav == "📡 Live Mailbox Sentinel (50s Auto-Defense)":
     st.header("📡 Live Mailbox Sentinel (50s Auto-Defense)")
-    st.markdown(
-        "**Autonomous continuous mailbox monitoring:** Keeps track of the last analyzed email checkpoint, "
-        "detects newly arriving emails every 50 seconds, runs deep multi-tier forensic inspection, "
-        "and dispatches instant mobile alerts via WhatsApp and Telegram when threats are uncovered."
+    st.warning("⚠️ **Live Sentinel is temporarily unavailable in public multi-user mode.**")
+    st.info(
+        "Autonomous background mailbox monitoring requires user-scoped worker isolation "
+        "and will be restored after the dedicated multi-user worker architecture is deployed.\n\n"
+        "**Available Live Capabilities:** You can inspect your live inbox directly and trigger on-demand "
+        "batch scans or single-email deep forensic analysis from the sidebar."
     )
-
-    is_connected = st.session_state.get("mailbox_connected", False)
-    m_type = st.session_state.get("mailbox_type", "IMAP")
-    creds = st.session_state.get("mailbox_creds", {})
-
-    state_dict = sentinel_manager.get_state_summary()
-    is_active = state_dict["is_running"]
-
-    # Top Status Bar
-    if is_active:
-        st.success(
-            f"🟢 **LIVE SHIELD ACTIVE** — Polling `{creds.get('email', 'Mailbox')}` every "
-            f"**{state_dict['poll_interval']}s**. Next checkpoint check in **{state_dict['next_check_countdown']}s**."
-        )
-    else:
-        st.info("⚪ **LIVE SHIELD STANDBY** — Configure alert credentials below and click 'Start Live Protection'.")
-
-    # High-level Metrics Row
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Sentinel Status", "🟢 Active" if is_active else "⚪ Standby")
-    m2.metric("Total Analyzed", state_dict["total_scanned"])
-    m3.metric("Phishing Blocked", state_dict["phishing_count"])
-    m4.metric("Mobile Alerts Sent", state_dict["alerts_sent"])
-
-    st.markdown("---")
-
-    col_ctrl, col_notify = st.columns([1, 1])
-
-    with col_ctrl:
-        st.subheader("🛡️ Sentinel Control Center")
-        if not is_connected:
-            st.warning("⚠️ No mailbox connected. Please connect your Gmail, Outlook, Yahoo, or IMAP account using the sidebar to enable Live Sentinel.")
-        else:
-            st.write(f"**Connected Mailbox:** `{creds.get('email')}` ({m_type})")
-
-            # Checkpoint Info Card
-            st.markdown(
-                f"""
-<div style="background-color: #1e293b; border-left: 4px solid #38bdf8; padding: 12px; border-radius: 6px; margin-bottom: 15px;">
-<div style="font-size: 0.8em; color: #94a3b8; font-weight: 600; text-transform: uppercase;">Last Analyzed Checkpoint</div>
-<div style="font-size: 1.05em; font-weight: 700; color: #f8fafc; margin-top: 4px;">{mask_sensitive_subject(state_dict['checkpoint_subject'])[:50]}</div>
-<div style="font-size: 0.85em; color: #cbd5e1; margin-top: 4px;"><b>Sender:</b> {state_dict['checkpoint_sender'][:40]}</div>
-<div style="font-size: 0.8em; color: #64748b; margin-top: 4px;"><b>Time:</b> {state_dict['checkpoint_date']} | <b>Last Check:</b> {state_dict['last_checked_time']}</div>
-</div>
-""",
-                unsafe_allow_html=True
-            )
-
-            poll_sec = st.slider("Polling Frequency (seconds):", min_value=10, max_value=120, value=30, step=5, key="sentinel_poll_slider")
-
-            c_btn1, c_btn2 = st.columns(2)
-            with c_btn1:
-                if not is_active:
-                    if st.button("🟢 Start Live Protection", type="primary", use_container_width=True, key="btn_start_sentinel"):
-                        alert_cfg = {
-                            "whatsapp_enabled": st.session_state.get("sentinel_wa_enabled", False),
-                            "whatsapp_phone": st.session_state.get("sentinel_wa_phone", ""),
-                            "whatsapp_apikey": st.session_state.get("sentinel_wa_key", ""),
-                            "telegram_enabled": st.session_state.get("sentinel_tg_enabled", False),
-                            "telegram_token": st.session_state.get("sentinel_tg_token", ""),
-                            "telegram_chat_id": st.session_state.get("sentinel_tg_cid", "")
-                        }
-                        if creds.get("email"):
-                            save_account_alert_config(creds["email"], alert_cfg)
-                        ok, msg = sentinel_manager.start(
-                            mailbox_type=m_type,
-                            mailbox_creds=creds,
-                            alert_config=alert_cfg,
-                            ml_classifier=ml_classifier,
-                            poll_interval=poll_sec
-                        )
-                        if ok:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                else:
-                    if st.button("🔴 Stop Live Protection", use_container_width=True, key="btn_stop_sentinel"):
-                        ok, msg = sentinel_manager.stop()
-                        st.warning(msg)
-                        st.rerun()
-            with c_btn2:
-                if st.button("🔄 Refresh Status", use_container_width=True, key="btn_refresh_sentinel"):
-                    st.rerun()
-
-    with col_notify:
-        st.subheader("📱 Mobile Threat Alerts (Free)")
-        st.caption("Receive instant notifications directly on your phone when HIGH / MALICIOUS risks are detected.")
-
-        # WhatsApp Setup
-        wa_enabled = st.checkbox("💬 Enable WhatsApp Alerts (CallMeBot API - ₹0 Free)", value=st.session_state.get("sentinel_wa_enabled", False), key="sentinel_wa_enabled")
-        if wa_enabled:
-            wa_phone_val = st.session_state.get("sentinel_wa_phone", "")
-            wa_key_val = st.session_state.get("sentinel_wa_key", "")
-            wa_is_armed = bool(wa_phone_val and wa_key_val)
-
-            if wa_is_armed and not st.session_state.get("show_wa_edit", False):
-                masked_phone = wa_phone_val[:4] + "••••" + wa_phone_val[-2:] if len(wa_phone_val) >= 6 else "••••••••"
-                st.success(f"🟢 **WhatsApp Alerts Armed** (`{masked_phone}`)")
-                if st.button("⚙️ Reconfigure WhatsApp Credentials", key="btn_toggle_wa_edit"):
-                    st.session_state["show_wa_edit"] = True
-                    st.rerun()
-            else:
-                with st.expander("⚡ How to get CallMeBot API Key & WhatsApp Bot Links", expanded=not wa_is_armed):
-                    st.markdown(
-                        """
-<div style="background-color: #0f172a; border-left: 4px solid #22c55e; padding: 12px; border-radius: 6px; font-size: 0.9em; margin-bottom: 12px;">
-<b style="color: #22c55e;">📱 WhatsApp Bot Setup Steps:</b><br>
-<b>1. Direct WhatsApp Link:</b> 👉 <a href="https://wa.me/34941872320?text=I%20allow%20callmebot%20to%20send%20me%20messages" target="_blank" style="color: #38bdf8; font-weight: bold; text-decoration: underline;">Click Here to Open WhatsApp with CallMeBot</a><br>
-<span style="color: #94a3b8; font-size: 0.85em;">(Phone: <code>+34 941 87 23 20</code> | Also check <a href="https://www.callmebot.com/blog/free-api-whatsapp-messages/" target="_blank" style="color: #38bdf8;">CallMeBot Official Site</a> for newly rotated live numbers)</span><br><br>
-<b>2. Send Message:</b> Send this text to the bot: <code>I allow callmebot to send me messages</code><br><br>
-<b>3. Receive API Key:</b> If active, the bot replies within seconds with: <i>"API Key generated: <b>123456</b>"</i>.<br>
-Copy that number and paste it below!<br><br>
-<span style="color: #f59e0b; font-size: 0.85em;">ℹ️ <b>Note:</b> CallMeBot's WhatsApp servers occasionally report full due to high traffic. If unavailable, you can also use the official <b>Telegram Bot</b> below for 100% instant, guaranteed phone alerts.</span>
-</div>
-""",
-                        unsafe_allow_html=True
-                    )
-                wa_phone = st.text_input("WhatsApp Phone (+country code):", value=wa_phone_val, placeholder="+919876543210", key="sentinel_wa_phone")
-                wa_key = st.text_input("CallMeBot API Key:", value=wa_key_val, type="password", placeholder="e.g. 123456", key="sentinel_wa_key")
-                
-                c_watest, c_wahide = st.columns(2)
-                with c_watest:
-                    if st.button("🧪 Send Test WhatsApp Alert", key="btn_test_wa"):
-                        if not wa_phone or not wa_key:
-                            st.error("Please enter your phone number and CallMeBot API key first.")
-                        else:
-                            with st.spinner("Sending test ping to WhatsApp..."):
-                                t_ok, t_msg = send_test_alert("whatsapp", {"whatsapp_phone": wa_phone, "whatsapp_apikey": wa_key})
-                            if t_ok:
-                                st.success("✅ WhatsApp test message delivered! Check your phone.")
-                                st.session_state["show_wa_edit"] = False
-                                if creds.get("email"):
-                                    save_account_alert_config(creds["email"], {
-                                        "whatsapp_enabled": True,
-                                        "whatsapp_phone": wa_phone,
-                                        "whatsapp_apikey": wa_key,
-                                        "telegram_enabled": st.session_state.get("sentinel_tg_enabled", False),
-                                        "telegram_token": st.session_state.get("sentinel_tg_token", ""),
-                                        "telegram_chat_id": st.session_state.get("sentinel_tg_cid", "")
-                                    })
-                                st.rerun()
-                            else:
-                                st.error(f"Dispatch failed: {t_msg}")
-                with c_wahide:
-                    if wa_is_armed and st.session_state.get("show_wa_edit", False):
-                        if st.button("🔒 Hide WhatsApp Credentials", key="btn_hide_wa"):
-                            st.session_state["show_wa_edit"] = False
-                            st.rerun()
-
-        # Telegram Setup
-        st.markdown("---")
-        tg_enabled = st.checkbox("✈️ Enable Telegram Alerts (Official Telegram Bot - 100% Guaranteed & Free)", value=st.session_state.get("sentinel_tg_enabled", False), key="sentinel_tg_enabled")
-        if tg_enabled:
-            tg_token_val = st.session_state.get("sentinel_tg_token", "")
-            tg_cid_val = st.session_state.get("sentinel_tg_cid", "")
-            tg_is_armed = bool(tg_token_val and tg_cid_val)
-
-            if tg_is_armed and not st.session_state.get("show_tg_edit", False):
-                masked_cid = "••••" + str(tg_cid_val)[-4:] if len(str(tg_cid_val)) >= 4 else "••••••••"
-                st.success(f"🟢 **Telegram Alert Bot Armed & Ready** (Chat ID: `{masked_cid}`)")
-                if st.button("⚙️ Reconfigure Telegram Credentials", key="btn_toggle_tg_edit"):
-                    st.session_state["show_tg_edit"] = True
-                    st.rerun()
-            else:
-                with st.expander("⚡ How to get Telegram Bot Token & Chat ID (30 Seconds)", expanded=not tg_is_armed):
-                    st.markdown(
-                        """
-<div style="background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 0.9em; margin-bottom: 12px;">
-<b style="color: #38bdf8;">Quick 2-Step Official Telegram Setup (Never blocked, 100% Free):</b><br>
-<b>1. Create your Personal Bot (15s):</b><br>
-• Open Telegram and search for <a href="https://t.me/BotFather" target="_blank" style="color: #38bdf8; font-weight: bold;">@BotFather</a>.<br>
-• Send <code>/newbot</code>, give it any name (e.g. <code>My EmailShield</code>) and username ending in bot (e.g. <code>my_shield_alert_bot</code>).<br>
-• BotFather will immediately give you an <b>HTTP API Token</b> (e.g. <code>7123456789:ABCdef...</code>). Paste it below.<br><br>
-<b>2. Get your Chat ID (10s):</b><br>
-• Message <a href="https://t.me/userinfobot" target="_blank" style="color: #38bdf8; font-weight: bold;">@userinfobot</a> on Telegram.<br>
-• It replies immediately with your numeric <b>Id</b> (e.g. <code>987654321</code>). Paste it below.<br>
-• Open your newly created bot in Telegram and click <b>START</b> so it can send you alerts!
-</div>
-""",
-                        unsafe_allow_html=True
-                    )
-                tg_token = st.text_input("Telegram Bot Token:", value=tg_token_val, type="password", placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ", key="sentinel_tg_token")
-                tg_cid = st.text_input("Telegram Chat ID:", value=tg_cid_val, placeholder="e.g. 987654321", key="sentinel_tg_cid")
-                
-                c_tgtest, c_tghide = st.columns(2)
-                with c_tgtest:
-                    if st.button("🧪 Send Test Telegram Alert", key="btn_test_tg"):
-                        if not tg_token or not tg_cid:
-                            st.error("Please enter both your Bot Token and Chat ID first.")
-                        else:
-                            with st.spinner("Sending test ping to Telegram..."):
-                                t_ok, t_msg = send_test_alert("telegram", {"telegram_token": tg_token, "telegram_chat_id": tg_cid})
-                            if t_ok:
-                                st.success("✅ Telegram test message delivered! Check your phone.")
-                                st.session_state["show_tg_edit"] = False
-                                if creds.get("email"):
-                                    save_account_alert_config(creds["email"], {
-                                        "whatsapp_enabled": st.session_state.get("sentinel_wa_enabled", False),
-                                        "whatsapp_phone": st.session_state.get("sentinel_wa_phone", ""),
-                                        "whatsapp_apikey": st.session_state.get("sentinel_wa_key", ""),
-                                        "telegram_enabled": True,
-                                        "telegram_token": tg_token,
-                                        "telegram_chat_id": tg_cid
-                                    })
-                                st.rerun()
-                            else:
-                                st.error(f"Dispatch failed: {t_msg}")
-                with c_tghide:
-                    if tg_is_armed and st.session_state.get("show_tg_edit", False):
-                        if st.button("🔒 Hide Telegram Credentials", key="btn_hide_tg"):
-                            st.session_state["show_tg_edit"] = False
-                            st.rerun()
-
-    # Inbound Activity Stream & Audit Log
-    st.markdown("---")
-    st.subheader("📋 Inbound Activity Stream & Threat Audit Log")
-
-    recent_act = state_dict.get("recent_activity", [])
-    if recent_act:
-        formatted_table = []
-        for a in recent_act:
-            v_badge = "🟢 SAFE"
-            if a["verdict"] == "HIGH":
-                v_badge = "🔴 HIGH RISK"
-            elif a["verdict"] == "SUSPICIOUS":
-                v_badge = "🟡 SUSPICIOUS"
-            
-            alert_str = "—"
-            if a.get("alert_sent"):
-                alert_str = f"🔔 Sent ({a.get('alert_channel', '')})"
-            elif a.get("verdict") == "HIGH":
-                alert_str = "⚠️ Failed / Disabled"
-
-            formatted_table.append({
-                "Email Received": a.get("email_date") or a.get("timestamp", "Unknown"),
-                "Scanned At": a.get("scan_time") or a.get("timestamp", "Just now"),
-                "Verdict": v_badge,
-                "Threat Score": f"{a['score']}/100",
-                "Sender": a["sender"][:30],
-                "Subject": mask_sensitive_subject(a["subject"])[:35],
-                "Mobile Alert": alert_str
-            })
-        st.dataframe(formatted_table, use_container_width=True)
-    else:
-        st.info("No new emails evaluated during this session yet. As incoming mail arrives, each item will appear here with its threat score and alert delivery status.")
-
-    if state_dict.get("error_log"):
-        with st.expander("⚠️ Sentinel Warning / Diagnostics Log"):
-            for err in state_dict["error_log"]:
-                st.code(err)
 
 # View 3: Single Case Investigation
 elif selected_nav == "🔍 Single Case Investigation":
@@ -1417,7 +995,7 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
         with tab3:
             # 1-Click IOC Export Actions
             st.subheader("📥 1-Click IOC Threat Intelligence Export (SIEM / MISP Ready)")
-            col_exp1, col_exp2, col_exp3 = st.columns(3)
+            col_exp1, col_exp2 = st.columns(2)
             with col_exp1:
                 st.download_button(
                     "📄 Export Case IOCs (CSV)",
@@ -1432,14 +1010,6 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                     export_case_iocs_json(case_id),
                     file_name=f"{case_id}_iocs.json",
                     mime="application/json",
-                    use_container_width=True
-                )
-            with col_exp3:
-                st.download_button(
-                    "🌐 Export All Cases (CSV)",
-                    export_case_iocs_csv(),
-                    file_name="all_cases_iocs.csv",
-                    mime="text/csv",
                     use_container_width=True
                 )
 
@@ -1709,31 +1279,11 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                 
         with tab6:
             st.subheader("🕸️ Investigation Correlation Graph & Campaign Clustering")
-            clusters = get_campaign_clusters()
-            
-            cluster_opts = ["All Infrastructure Links"]
-            for c in clusters:
-                cluster_opts.append(f"{c['campaign_id']} ({c['summary']})")
-                
-            selected_cluster = st.selectbox("Select Campaign Cluster:", cluster_opts)
-            filter_id = None
-            if selected_cluster != "All Infrastructure Links":
-                filter_id = selected_cluster.split()[0]
-                
-            if clusters:
-                st.markdown("#### 🎯 Active Threat Campaigns Identified Across Database")
-                c_rows = []
-                for c in clusters:
-                    c_rows.append({
-                        "Campaign ID": c["campaign_id"],
-                        "Linked Cases": c["case_count"],
-                        "Associated IOCs": c["ioc_count"],
-                        "Shared Vectors": c["summary"]
-                    })
-                st.dataframe(c_rows, use_container_width=True)
-                
-            fig = build_correlation_graph(current_case_id=case_id, campaign_filter=filter_id)
-            st.plotly_chart(fig, use_container_width=True)
+            st.info(
+                "Cross-case correlation across historical database records is temporarily restricted in public multi-user mode "
+                "to ensure complete data isolation between investigators. "
+                "Active infrastructure indicators for this specific investigation are listed in the Indicators tab."
+            )
             
         with tab7:
             st.subheader("📝 SOC Case Management & Chain of Custody")
