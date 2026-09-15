@@ -108,5 +108,80 @@ class TestCctldRegression(unittest.TestCase):
         self.assertEqual(risk_score, "HIGH")
 
 
+    def test_nptel_real_payload_with_sendgrid_and_login(self):
+        """Verify real NPTEL email 7437 with SendGrid links and benign 'login' keyword yields LOW / Clean."""
+        headers = {
+            "from": "onlinecourses@nptel.iitm.ac.in",
+            "subject": "Introduction to Internet of Things - Week 9 content is live now!!",
+            "return-path": "<noc26-cs161-announce+bncBCZ5RXNBUUOBBPWIT7KQMGQES36WPII@nptel.iitm.ac.in>",
+            "dkim-signature": "v=1; a=rsa-sha256; d=nptel-iitm-ac-in.20251104.gappssmtp.com; s=20251104;",
+            "authentication-results": "mx.google.com; dkim=pass header.d=nptel-iitm-ac-in.20251104.gappssmtp.com; spf=pass; dmarc=pass header.from=nptel.iitm.ac.in",
+            "list-unsubscribe": "<https://groups.google.com/a/nptel.iitm.ac.in/group/noc26-cs161-announce/subscribe>"
+        }
+        auth_res = evaluate_auth_and_alignment(headers)
+        body = (
+            "Dear Students,\n"
+            "The lecture videos for Week 9 have been uploaded.\n"
+            "Please remember to login into the website to view contents (if you aren't logged in already).\n"
+            "Course link: <a href=\"https://u3447072.ct.sendgrid.net/ls/click?upn=123\">https://onlinecourses.nptel.ac.in/noc26_cs161/unit?unit=92&amp;lesson=93</a>\n"
+            "Assignment link: <a href=\"https://u3447072.ct.sendgrid.net/ls/click?upn=456\">https://onlinecourses.nptel.ac.in/noc26_cs161/unit?unit=92&amp;assessment=387</a>\n"
+            "Thanks and Regards, --NPTEL Team"
+        )
+        parsed_data = {"headers": headers, "body": body}
+        findings = evaluate_rules(parsed_data, auth_alignment=auth_res, content_type="Education / Academic")
+
+        # Verify RULE-006 is present at LOW severity
+        r6 = [f for f in findings if f.get("rule_id") == "RULE-006"]
+        self.assertEqual(len(r6), 1)
+        self.assertEqual(r6[0]["severity"], "LOW")
+
+        # Verify RULE-019 is present at LOW severity (not HIGH)
+        r19_high = [f for f in findings if f.get("rule_id") == "RULE-019" and f.get("severity") == "HIGH"]
+        self.assertEqual(len(r19_high), 0, "Authenticated SendGrid ESP link with benign 'login' must not trigger RULE-019 HIGH")
+
+        high_findings = [f for f in findings if f.get("severity") == "HIGH"]
+        self.assertEqual(len(high_findings), 0)
+
+        risk_score, _ = calculate_hybrid_risk(findings, ml_prob=0.4755, auth_alignment=auth_res, content_type="Education / Academic")
+        self.assertEqual(risk_score, "LOW")
+
+    def test_unauthenticated_phishing_with_esp_destination_remains_high(self):
+        """Verify unauthenticated email routing through an ESP triggers RULE-019 HIGH via Branch B."""
+        headers = {
+            "from": "alerts@unverified-phish.xyz",
+            "subject": "Security Alert: Verify Now"
+        }
+        # No auth headers -> auth_ok is False
+        auth_res = evaluate_auth_and_alignment(headers)
+        body = 'Click here: <a href="https://click.sendgrid.net/ls/click?upn=abc">https://accounts.portal-verify.com/login</a>'
+        parsed_data = {"headers": headers, "body": body}
+        findings = evaluate_rules(parsed_data, auth_alignment=auth_res)
+
+        r19_high = [f for f in findings if f.get("rule_id") == "RULE-019" and f.get("severity") == "HIGH"]
+        self.assertTrue(len(r19_high) > 0, "Unauthenticated anchor spoofing via ESP must trigger RULE-019 HIGH")
+
+        risk_score, _ = calculate_hybrid_risk(findings, ml_prob=0.85, auth_alignment=auth_res)
+        self.assertEqual(risk_score, "HIGH")
+
+    def test_sensitive_brand_spoof_via_esp_remains_high(self):
+        """Verify sensitive brand anchor spoofing (PayPal) routing through ESP triggers Branch A HIGH."""
+        headers = {
+            "from": "billing@promotions-mailer.com",
+            "subject": "Invoice Paid",
+            "list-unsubscribe": "<mailto:unsub@promotions-mailer.com>"
+        }
+        # Even if auth passed for the sender domain
+        auth_res = {"effective_dmarc": "PASS", "threat_detected": False}
+        body = 'Receipt: <a href="https://click.sendgrid.net/track/123">paypal.com</a>'
+        parsed_data = {"headers": headers, "body": body}
+        findings = evaluate_rules(parsed_data, auth_alignment=auth_res, content_type="Newsletter / Subscription")
+
+        r19_high = [f for f in findings if f.get("rule_id") == "RULE-019" and f.get("severity") == "HIGH"]
+        self.assertTrue(len(r19_high) > 0, "Sensitive brand masking via ESP must trigger Branch A HIGH")
+
+        risk_score, _ = calculate_hybrid_risk(findings, ml_prob=0.60, auth_alignment=auth_res)
+        self.assertEqual(risk_score, "HIGH")
+
+
 if __name__ == "__main__":
     unittest.main()

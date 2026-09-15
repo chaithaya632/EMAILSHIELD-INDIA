@@ -1,6 +1,7 @@
 import re
 from typing import Dict, Any, List
 from core.indicators import get_registrable_domain
+from core.domain_intel import KNOWN_ESP_DOMAINS
 
 def evaluate_rules(
     parsed_email: Dict[str, Any],
@@ -367,7 +368,11 @@ def evaluate_rules(
     sender_root = get_base_domain(from_addr)
     return_path_root = get_base_domain(extract_email(headers.get("return-path", "")))
 
-    has_cred_lure = any(f.get("rule_id") in ["RULE-006", "RULE-020", "RULE-021"] for f in findings)
+    has_active_cred_lure = any(
+        (f.get("rule_id") in ["RULE-020", "RULE-021"]) or
+        (f.get("rule_id") == "RULE-006" and f.get("severity") in ["HIGH", "MEDIUM"])
+        for f in findings
+    )
     has_urgency_lure = any(f.get("rule_id") == "RULE-007" and f.get("severity") in ["HIGH", "MEDIUM"] for f in findings)
 
     for sp in anchor_spoofs:
@@ -389,7 +394,7 @@ def evaluate_rules(
         elif not auth_ok and not is_sender_aligned and not is_social:
             sp_severity = "HIGH"
             explanation = "Unauthenticated message contains deceptive anchor routing away from apparent visible host."
-        elif has_cred_lure and not is_sender_aligned:
+        elif has_active_cred_lure and not is_sender_aligned:
             sp_severity = "HIGH"
             explanation = "Adversary paired credential/payment request with deceptive hyperlink anchor."
         elif auth_ok and is_newsletter and is_social:
@@ -398,7 +403,7 @@ def evaluate_rules(
         elif auth_ok and is_sender_aligned:
             sp_severity = "LOW"
             explanation = "Hyperlink routed via tracking infrastructure aligned with authenticated sender organization."
-        elif auth_ok and is_newsletter and not has_cred_lure:
+        elif auth_ok and is_newsletter and (act_root in KNOWN_ESP_DOMAINS or not has_active_cred_lure):
             sp_severity = "LOW"
             explanation = "Outbound reference link wrapped in bulk email delivery provider tracking domain."
         else:
