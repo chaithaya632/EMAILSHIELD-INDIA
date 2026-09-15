@@ -1,5 +1,6 @@
 import re
 from typing import Dict, Any, List
+from core.indicators import get_registrable_domain
 
 def evaluate_rules(
     parsed_email: Dict[str, Any],
@@ -39,11 +40,10 @@ def evaluate_rules(
         return header_val.strip().lower()
 
     def get_base_domain(email_str: str):
-        if "@" not in email_str:
+        if not email_str:
             return ""
-        dom = email_str.split("@")[-1].lower()
-        parts = dom.split(".")
-        return ".".join(parts[-2:]) if len(parts) >= 2 else dom
+        dom = email_str.split("@")[-1].lower() if "@" in email_str else email_str.lower()
+        return get_registrable_domain(dom)
 
     if reply_to and from_header:
         f_email = extract_email(from_header)

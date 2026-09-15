@@ -1,5 +1,6 @@
 import re
 from typing import Dict, Any, List, Optional
+from core.indicators import get_registrable_domain
 
 def extract_domain(email_address: str) -> str:
     """Extract domain from email address or header string."""
@@ -11,11 +12,10 @@ def extract_domain(email_address: str) -> str:
     return ""
 
 def get_org_domain(domain: str) -> str:
-    """Extract organizational base domain (e.g. sub.example.com -> example.com)."""
-    parts = domain.lower().split('.')
-    if len(parts) >= 2:
-        return ".".join(parts[-2:])
-    return domain
+    """Extract organizational base domain (e.g. sub.example.com -> example.com, nptel.iitm.ac.in -> iitm.ac.in)."""
+    if not domain:
+        return ""
+    return get_registrable_domain(domain)
 
 def parse_auth_results(auth_header: str) -> List[Dict[str, str]]:
     """
