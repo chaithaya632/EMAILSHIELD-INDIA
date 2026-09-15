@@ -1,4 +1,5 @@
 from typing import List, Optional, Dict, Any
+from enum import Enum
 from pydantic import BaseModel, Field
 from datetime import datetime
 
@@ -172,4 +173,57 @@ class CaseReport(BaseModel):
     sender_location: Optional[Dict[str, Any]] = None
     risk_score: str = "UNKNOWN"
     risk_reasons: List[str] = []
+
+class DomainRole(str, Enum):
+    SENDER_IDENTITY = "SENDER_IDENTITY"
+    REPLY_TO = "REPLY_TO"
+    RETURN_PATH = "RETURN_PATH"
+    DKIM = "DKIM"
+    URL_DESTINATION = "URL_DESTINATION"
+    VISIBLE_ANCHOR = "VISIBLE_ANCHOR"
+    QR_DESTINATION = "QR_DESTINATION"
+    ATTACHMENT_METADATA = "ATTACHMENT_METADATA"
+    THIRD_PARTY_INFRASTRUCTURE = "THIRD_PARTY_INFRASTRUCTURE"
+    UNKNOWN = "UNKNOWN"
+
+class DomainVerdict(str, Enum):
+    LIKELY_LEGITIMATE = "LIKELY LEGITIMATE"
+    THIRD_PARTY_INFRASTRUCTURE = "THIRD-PARTY INFRASTRUCTURE"
+    LOOKALIKE_IMPERSONATION = "LOOKALIKE / IMPERSONATION"
+    SUSPICIOUS = "SUSPICIOUS"
+    HIGH_RISK = "HIGH RISK"
+    UNKNOWN = "UNKNOWN"
+
+class InspectedDomain(BaseModel):
+    domain: str
+    registrable_domain: str
+    roles: List[DomainRole] = Field(default_factory=list)
+    occurrence_count: int = 1
+
+    # Registration intelligence
+    rdap_available: bool = False
+    registration_date: Optional[str] = "Unknown"
+    domain_age_days: Optional[int] = None
+    registrar: Optional[str] = "Unknown"
+    is_nrd: bool = False
+
+    # DNS
+    dns_resolved: bool = False
+    resolved_ips: List[str] = Field(default_factory=list)
+
+    # Alignment
+    is_sender_aligned: bool = False
+    is_auth_aligned: bool = False
+    is_claimed_brand_aligned: bool = False
+
+    # Lookalike
+    is_lookalike: bool = False
+    lookalike_technique: Optional[str] = None
+    impersonated_brand: Optional[str] = None
+    similarity_score: float = 0.0
+
+    # Risk/evidence
+    risk_signals: List[str] = Field(default_factory=list)
+    verdict: DomainVerdict = DomainVerdict.UNKNOWN
+    evidence_references: List[str] = Field(default_factory=list)
 
