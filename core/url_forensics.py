@@ -1,9 +1,344 @@
+import socket
+import ipaddress
 import re
 import urllib.parse
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple, Union
 import requests
+import urllib3
+from urllib3.connection import HTTPConnection, HTTPSConnection
+from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
+from urllib3.poolmanager import PoolManager
+from urllib3.util.connection import _set_socket_options
+from requests.adapters import HTTPAdapter
+
 from core.schemas import URLAnalysisResult
 from core.domain_reputation import OFFICIAL_BRAND_DOMAINS, KNOWN_REPUTABLE_DOMAINS
+
+# ---------------------------------------------------------------------------
+# SSRF Exceptions
+# ---------------------------------------------------------------------------
+
+class SSRFSecurityError(requests.exceptions.RequestException):
+    """Base exception for SSRF security violations."""
+    pass
+
+class SSRFBlockedError(SSRFSecurityError):
+    """Raised when an outbound probe targets a restricted, private, or dangerous IP/host."""
+    def __init__(self, message: str, destination_url: Optional[str] = None, redirect_count: int = 0):
+        super().__init__(message)
+        self.destination_url = destination_url
+        self.redirect_count = redirect_count
+
+class SSRFResolutionError(SSRFSecurityError):
+    """Raised when DNS resolution fails or returns no addresses for a target host."""
+    pass
+
+# ---------------------------------------------------------------------------
+# IP Address Validation & SSRF Guardrails
+# ---------------------------------------------------------------------------
+
+BLOCKED_METADATA_IPS = {
+    "169.254.169.254",   # AWS / Azure / GCP / DigitalOcean IMDS
+    "100.100.100.200",   # Alibaba Cloud IMDS
+    "fd00:ec2::254",     # AWS IPv6 IMDS
+}
+
+def is_safe_ip(ip_obj_or_str: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address]) -> bool:
+    """
+    Validates that an IP address is a publicly routable, global IP address.
+    Blocks:
+    - Loopback (127.0.0.0/8, ::1)
+    - RFC1918 Private (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7)
+    - Link-Local (169.254.0.0/16, fe80::/10)
+    - Unspecified (0.0.0.0, ::)
+    - Multicast (224.0.0.0/4, ff00::/8)
+    - Reserved / Non-global (240.0.0.0/4, 100.64.0.0/10, etc.)
+    - IPv4-mapped IPv6 addresses targeting private/loopback spaces (::ffff:127.0.0.1)
+    - 6to4 / Teredo embedded addresses targeting private spaces
+    - Explicit Cloud Metadata addresses
+    """
+    try:
+        if isinstance(ip_obj_or_str, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            ip = ip_obj_or_str
+        else:
+            s = str(ip_obj_or_str).strip()
+            if s.startswith("[") and s.endswith("]"):
+                s = s[1:-1]
+            ip = ipaddress.ip_address(s)
+
+        # Check IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
+        if getattr(ip, "ipv4_mapped", None) is not None:
+            if not is_safe_ip(ip.ipv4_mapped):
+                return False
+
+        # 6to4 addresses (2002::/16) embed IPv4
+        if isinstance(ip, ipaddress.IPv6Address):
+            if ip.sixtofour:
+                if not is_safe_ip(ip.sixtofour):
+                    return False
+            if ip.teredo:
+                if not is_safe_ip(ip.teredo[1]):
+                    return False
+
+        # Core RFC checks
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_unspecified
+            or ip.is_reserved
+            or not ip.is_global
+        ):
+            return False
+
+        # Cloud metadata explicit checks
+        str_ip = str(ip).lower()
+        if str_ip in BLOCKED_METADATA_IPS:
+            return False
+
+        return True
+    except (ValueError, TypeError):
+        return False
+
+# ---------------------------------------------------------------------------
+# Target URL Pre-Flight Validation
+# ---------------------------------------------------------------------------
+
+def validate_url_target(url: str) -> Tuple[str, List[str]]:
+    """
+    Validates a URL before making any network probe:
+    1. Enforces http / https schemes only (blocks file://, ftp://, gopher://, dict://, etc.)
+    2. Ensures a valid hostname is present
+    3. Resolves hostname and validates that ALL resolved IP addresses are safe public IPs.
+    Returns: (cleaned_hostname, list_of_validated_ips)
+    Raises SSRFBlockedError or SSRFResolutionError on safety or resolution failures.
+    """
+    if not url or not isinstance(url, str):
+        raise SSRFBlockedError(f"Invalid or empty URL: '{url}'")
+
+    parsed = urllib.parse.urlsplit(url.strip())
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise SSRFBlockedError(f"Prohibited URL scheme '{parsed.scheme}': only http and https are allowed")
+
+    host = parsed.hostname
+    if not host:
+        raise SSRFBlockedError(f"Malformed URL missing hostname: '{url}'")
+
+    host = host.lower().strip().strip("[]")
+
+    # Integer IPv4 representation check (e.g. 2130706433)
+    if host.isdigit():
+        try:
+            int_ip = ipaddress.ip_address(int(host))
+            if not is_safe_ip(int_ip):
+                raise SSRFBlockedError(f"SSRF blocked: numeric host '{host}' converts to unsafe IP '{int_ip}'")
+            return host, [str(int_ip)]
+        except ValueError:
+            raise SSRFBlockedError(f"SSRF blocked: invalid numeric host '{host}'")
+
+    # Direct IP check
+    try:
+        direct_ip = ipaddress.ip_address(host)
+        if not is_safe_ip(direct_ip):
+            raise SSRFBlockedError(f"SSRF blocked: host '{host}' is a non-routable/restricted IP address")
+        return host, [str(direct_ip)]
+    except ValueError:
+        pass  # Host is a domain name, proceed to DNS resolution
+
+    # Resolve hostname to verify ALL returned IPs
+    port = parsed.port or (443 if scheme == "https" else 80)
+    try:
+        addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise SSRFResolutionError(f"DNS resolution failed for '{host}': {e}") from e
+
+    if not addr_info:
+        raise SSRFResolutionError(f"DNS resolution returned no records for '{host}'")
+
+    resolved_ips = []
+    for entry in addr_info:
+        ip_addr = entry[4][0]
+        if not is_safe_ip(ip_addr):
+            raise SSRFBlockedError(f"SSRF blocked: host '{host}' resolves to unsafe IP '{ip_addr}'")
+        resolved_ips.append(ip_addr)
+
+    return host, resolved_ips
+
+# ---------------------------------------------------------------------------
+# DNS-Rebinding Safe Connection Classes & Adapter
+# ---------------------------------------------------------------------------
+
+def _safe_create_connection(
+    address: tuple,
+    timeout: Any = 3.5,
+    source_address: Optional[tuple] = None,
+    socket_options: Any = None,
+) -> socket.socket:
+    """
+    Socket factory that validates all resolved IPs immediately before opening a TCP connection.
+    Guarantees that DNS rebinding occurring between pre-flight and connection cannot connect
+    to an unsafe IP address.
+    """
+    host, port = address
+    if host.startswith("["):
+        host = host.strip("[]")
+
+    try:
+        addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise SSRFResolutionError(f"DNS resolution failed at connection time for '{host}': {e}") from e
+
+    if not addr_info:
+        raise SSRFResolutionError(f"DNS resolution returned no addresses for '{host}'")
+
+    for res in addr_info:
+        target_ip = res[4][0]
+        if not is_safe_ip(target_ip):
+            raise SSRFBlockedError(f"SSRF blocked: host '{host}' resolves to unsafe IP '{target_ip}'")
+
+    err = None
+    for res in addr_info:
+        af, socktype, proto, canonname, sa = res
+        target_ip = sa[0]
+        if not is_safe_ip(target_ip):
+            raise SSRFBlockedError(f"SSRF blocked: connection target '{target_ip}' is unsafe")
+
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            if socket_options:
+                _set_socket_options(sock, socket_options)
+            if isinstance(timeout, (int, float)):
+                sock.settimeout(timeout)
+            elif hasattr(timeout, "connect_timeout") and timeout.connect_timeout:
+                sock.settimeout(timeout.connect_timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sa)
+            return sock
+        except OSError as e:
+            err = e
+            if sock is not None:
+                sock.close()
+
+    if err is not None:
+        raise err
+    raise OSError("Failed to establish connection to any resolved IP")
+
+class SafeHTTPConnection(HTTPConnection):
+    def _new_conn(self) -> socket.socket:
+        return _safe_create_connection(
+            (getattr(self, "_dns_host", self.host), self.port),
+            self.timeout,
+            source_address=self.source_address,
+            socket_options=self.socket_options,
+        )
+
+class SafeHTTPSConnection(HTTPSConnection):
+    def _new_conn(self) -> socket.socket:
+        return _safe_create_connection(
+            (getattr(self, "_dns_host", self.host), self.port),
+            self.timeout,
+            source_address=self.source_address,
+            socket_options=self.socket_options,
+        )
+
+class SafeHTTPConnectionPool(HTTPConnectionPool):
+    ConnectionCls = SafeHTTPConnection
+
+class SafeHTTPSConnectionPool(HTTPSConnectionPool):
+    ConnectionCls = SafeHTTPSConnection
+
+class SafePoolManager(PoolManager):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pool_classes_by_scheme = {
+            "http": SafeHTTPConnectionPool,
+            "https": SafeHTTPSConnectionPool,
+        }
+
+class SafeHTTPAdapter(HTTPAdapter):
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        self.poolmanager = SafePoolManager(num_pools=connections, maxsize=maxsize, block=block, **pool_kwargs)
+
+def get_safe_session() -> requests.Session:
+    """Returns a requests.Session equipped with SSRF-safe connection adapters."""
+    session = requests.Session()
+    adapter = SafeHTTPAdapter()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+# ---------------------------------------------------------------------------
+# Safe Redirect-Aware Unshortening Function
+# ---------------------------------------------------------------------------
+
+def safe_unshorten_url(
+    url: str,
+    timeout: float = 3.5,
+    max_redirects: int = 5,
+    user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) EMAILSHIELD-Forensic-Probe/2.0"
+) -> Tuple[str, int, List[str]]:
+    """
+    Safely resolves HTTP HEAD redirects with multi-stage SSRF defense:
+    1. Validates the URL scheme (http/https only) and target IP addresses pre-flight.
+    2. Utilizes custom socket factories validating all resolved IPs at connect time (anti-DNS-rebinding).
+    3. Manually evaluates each redirect hop, re-validating destinations before making subsequent requests.
+    4. Limits redirect hops to max_redirects (default: 5) to prevent infinite redirect loops.
+    Returns: (final_url, redirect_count, hops_history)
+    """
+    current_url = url
+    redirect_count = 0
+    hops_history = []
+    session = get_safe_session()
+
+    for hop in range(max_redirects):
+        # 1. Pre-flight validate current URL target
+        try:
+            validate_url_target(current_url)
+        except SSRFBlockedError as e:
+            raise SSRFBlockedError(str(e), destination_url=current_url, redirect_count=redirect_count) from e
+
+        # 2. Make outbound HEAD request with allow_redirects=False
+        try:
+            resp = session.head(
+                current_url,
+                allow_redirects=False,
+                timeout=timeout,
+                headers={"User-Agent": user_agent, "Accept": "*/*", "Connection": "close"}
+            )
+        except requests.exceptions.RequestException as e:
+            # Check if inner cause was SSRFSecurityError
+            inner = e.args[0] if e.args else None
+            if isinstance(inner, tuple) and len(inner) > 1 and isinstance(inner[1], SSRFSecurityError):
+                raise SSRFBlockedError(str(inner[1]), destination_url=current_url, redirect_count=redirect_count) from e
+            if isinstance(getattr(e, "__cause__", None), SSRFSecurityError):
+                cause = getattr(e, "__cause__", None)
+                raise SSRFBlockedError(str(cause), destination_url=current_url, redirect_count=redirect_count) from e
+            raise
+
+        # 3. Check for HTTP redirect response
+        if resp.status_code in (301, 302, 303, 307, 308) or resp.is_redirect:
+            location = resp.headers.get("Location")
+            if not location:
+                break
+            next_url = urllib.parse.urljoin(current_url, location)
+            redirect_count += 1
+            hops_history.append(next_url)
+
+            # Re-validate the redirect destination target before next hop
+            try:
+                validate_url_target(next_url)
+            except SSRFBlockedError as e:
+                raise SSRFBlockedError(str(e), destination_url=next_url, redirect_count=redirect_count) from e
+
+            current_url = next_url
+        else:
+            break
+
+    return current_url, redirect_count, hops_history
 
 SHORTENER_DOMAINS = {
     "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd",
@@ -98,18 +433,22 @@ def analyze_url(url: str, resolve_redirects: bool = True) -> URLAnalysisResult:
 
     if is_shortener or resolve_redirects:
         try:
-            # Safe HEAD request with 3.5s timeout, avoiding body downloads
-            resp = requests.head(
-                url,
-                allow_redirects=True,
-                timeout=3.5,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) EMAILSHIELD-Forensic-Probe/2.0"}
-            )
-            final_destination = resp.url
-            redirect_count = len(resp.history)
+            final_destination, redirect_count, hops_history = safe_unshorten_url(url, timeout=3.5)
             if redirect_count > 0:
                 reasons.append(f"Redirect chain detected: Passed through {redirect_count} hops to '{defang_url(final_destination)}'")
                 suspicious_indicators.append(f"HTTP Redirects ({redirect_count} hops)")
+        except SSRFBlockedError as e:
+            if e.destination_url:
+                final_destination = e.destination_url
+                redirect_count = e.redirect_count
+            if redirect_count > 0:
+                reasons.append(f"Redirect chain detected: Passed through {redirect_count} hops to '{defang_url(final_destination)}'")
+                suspicious_indicators.append(f"HTTP Redirects ({redirect_count} hops)")
+            reasons.append(f"SSRF Protection: Outbound probe blocked to restricted/private destination: {e}")
+            suspicious_indicators.append("Restricted/Internal Network Destination (SSRF Blocked)")
+            if is_shortener:
+                reasons.append("URL shortener redirected to a restricted internal address.")
+                suspicious_indicators.append("Obfuscated URL Shortener")
         except Exception:
             # Network blocked, expired domain, or server rejected probe
             if is_shortener:
@@ -164,8 +503,9 @@ def analyze_url(url: str, resolve_redirects: bool = True) -> URLAnalysisResult:
         )
 
     # Check if destination is a verified legitimate service or official brand platform
+    has_ssrf_block = "Restricted/Internal Network Destination (SSRF Blocked)" in suspicious_indicators
     is_official_dest = is_official_brand_destination(final_host) or is_official_brand_destination(host)
-    is_verified_dest = is_verified_service(final_host) or is_verified_service(host) or is_official_dest
+    is_verified_dest = (is_verified_service(final_host) or is_verified_service(host) or is_official_dest) and not has_ssrf_block
 
     if is_verified_dest and not detected_payload_ext:
         # Known legitimate platform or official banking/enterprise domain
@@ -235,6 +575,17 @@ def analyze_url(url: str, resolve_redirects: bool = True) -> URLAnalysisResult:
         )
         recommended_action = (
             "⚠️ DO NOT SUBMIT PASSWORDS. Mark the email as Phishing in your email client. Block the domain on your organization's DNS/firewall."
+        )
+
+    elif has_ssrf_block:
+        threat_category = "Restricted / Internal Network Destination (SSRF Blocked)"
+        risk_level = "HIGH"
+        potential_impact = (
+            "INTERNAL RECONNAISSANCE / SSRF: Destination points to loopback, private RFC1918 network, "
+            "or cloud metadata infrastructure. Outbound network probe was safely blocked to prevent server-side request forgery."
+        )
+        recommended_action = (
+            "🚨 POTENTIAL SSRF ATTACK: Do NOT interact with this link. Investigate why this email references internal/cloud metadata services."
         )
 
     elif is_ip_host:

@@ -182,7 +182,29 @@ Enter your organization's IMAP host address (e.g., <code>mail.company.com</code>
         )
 
     u_email = st.sidebar.text_input("Email:", placeholder="user@zoho.com" if provider_name == "Zoho Mail" else "user@gmail.com")
-    u_pass = st.sidebar.text_input("App Password:", type="password", help="16-character code created above. Spaces are automatically removed.")
+
+    # 2FA & App Password Guidance
+    gmail_note_html = "<div style='color: #38bdf8; font-size: 0.9em; margin: 4px 0;'>💡 <b>Google note:</b> Google requires 2-Step Verification before you can create an App Password.</div>" if provider_name == "Gmail" else ""
+
+    st.sidebar.markdown(
+        f"""
+<div style="background-color: #0f172a; border-left: 4px solid #f59e0b; padding: 10px; border-radius: 6px; font-size: 0.83em; margin: 8px 0 10px 0; color: #e2e8f0; line-height: 1.45;">
+<b style="color: #f59e0b; font-size: 1.05em;">🔐 App Password Required</b><br><br>
+<span style="color: #cbd5e1;">If your email provider requires an App Password:</span>
+<ol style="margin: 6px 0 6px 18px; padding-left: 0;">
+  <li><b>Enable 2-Step Verification / 2-Factor Authentication (2FA)</b> on your email account first.</li>
+  <li>After 2FA is enabled, <b>generate an App Password</b> from your email provider's security settings.</li>
+  <li>Use the generated App Password here instead of your normal email password.</li>
+</ol>
+{gmail_note_html}
+<div style="color: #fbbf24; margin: 4px 0;">⚠️ <i>Your normal email password may not work for IMAP when 2FA is enabled.</i></div>
+<div style="color: #94a3b8; font-size: 0.9em; margin-top: 4px;">🔒 EMAILSHIELD INDIA does not ask you to share your normal account password with us. Use an App Password when your provider supports or requires it.</div>
+</div>
+""",
+        unsafe_allow_html=True
+    )
+
+    u_pass = st.sidebar.text_input("Password / App Password:", type="password", help="Enter your App Password (required when 2FA is active) or normal email password. Spaces are automatically removed.")
 
     with st.sidebar.expander("❓ What is an App Password? Is it safe & free?"):
         st.markdown(
