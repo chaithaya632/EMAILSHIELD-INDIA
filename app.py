@@ -32,6 +32,31 @@ from core.eml_sanitizer import sanitize_eml_content
 from core.header_diff import compare_headers_against_baseline, BRAND_BASELINES
 from core.ncrp_packager import generate_ncrp_complaint_text, generate_ncrp_pdf_annexure
 from core.sentinel import mask_sensitive_subject
+from core.sentinel_control import (
+    validate_poll_interval,
+    validate_desired_state,
+    validate_provider,
+    validate_email_syntax,
+    validate_imap_port,
+    validate_alert_channel,
+    get_user_worker,
+    upsert_user_worker,
+    set_worker_desired_state,
+    get_user_mailbox,
+    save_user_mailbox_metadata,
+    get_user_checkpoint,
+    get_user_alerts,
+    save_user_alert_metadata,
+    deactivate_user_sentinel,
+    delete_user_sentinel_config,
+    MIN_POLL_INTERVAL_SECONDS,
+    MAX_POLL_INTERVAL_SECONDS,
+    DEFAULT_POLL_INTERVAL_SECONDS,
+    ALLOWED_PROVIDERS,
+    ALLOWED_AUTH_MECHANISMS,
+    ALLOWED_ALERT_CHANNELS,
+    PROVIDER_IMAP_DEFAULTS,
+)
 import plotly.express as px
 import sys
 import importlib
@@ -432,6 +457,261 @@ elif selected_nav == "📡 Live Mailbox Sentinel (50s Auto-Defense)":
         "**Available Live Capabilities:** You can inspect your live inbox directly and trigger on-demand "
         "batch scans or single-email deep forensic analysis from the sidebar."
     )
+
+    st.markdown("---")
+    st.subheader("⚙️ Sentinel Control Plane (Tenant Lifecycle & Policy Management)")
+
+    if not is_supabase_configured() or not current_user_id or not user_client:
+        st.info("🔐 **Authentication Required**: Please sign in or register via the sidebar to configure and manage your Sentinel worker.")
+    else:
+        # Authenticated user control plane
+        worker_rec = get_user_worker(current_user_id, user_client)
+        mailbox_rec = get_user_mailbox(current_user_id, user_client)
+        checkpoint_rec = get_user_checkpoint(current_user_id, user_client)
+        alerts_rec = get_user_alerts(current_user_id, user_client)
+
+        current_desired_state = worker_rec.get("desired_state", "STOPPED") if worker_rec else "STOPPED"
+        current_poll_interval = worker_rec.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS) if worker_rec else DEFAULT_POLL_INTERVAL_SECONDS
+        has_worker = worker_rec is not None
+
+        # Top summary metric cards
+        mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+        with mcol1:
+            st.metric(
+                label="Desired State",
+                value=current_desired_state,
+                delta="INTENDED" if current_desired_state == "RUNNING" else "OFFLINE",
+                delta_color="normal" if current_desired_state == "RUNNING" else "off"
+            )
+        with mcol2:
+            st.metric(
+                label="Worker Execution State",
+                value="NOT DEPLOYED (Phase 4)",
+                help="Background workers are not deployed in Phase 3. Setting Desired State signals intent for Phase 4 deployment."
+            )
+        with mcol3:
+            st.metric(
+                label="Poll Interval",
+                value=f"{current_poll_interval}s",
+                help="Configured frequency between background mailbox sweeps."
+            )
+        with mcol4:
+            configured_email = mailbox_rec.get("email_address", "None") if mailbox_rec else "None"
+            st.metric(
+                label="Target Mailbox",
+                value=configured_email[:18] + ("..." if len(configured_email) > 18 else ""),
+                help=configured_email
+            )
+
+        st.markdown("#### 🎮 Worker State Actions")
+        btn_col1, btn_col2, btn_col3 = st.columns([2, 2, 3])
+        with btn_col1:
+            start_disabled = (current_desired_state == "RUNNING")
+            if st.button("▶️ Start Sentinel (Set Desired: RUNNING)", disabled=start_disabled, use_container_width=True, type="primary"):
+                ok, msg = upsert_user_worker(current_user_id, current_poll_interval, "RUNNING", user_client)
+                if ok:
+                    st.success("Sentinel desired state set to RUNNING. (Awaiting Phase 4 worker daemon)")
+                    st.rerun()
+                else:
+                    st.error(f"Failed to update desired state: {msg}")
+        with btn_col2:
+            stop_disabled = (current_desired_state == "STOPPED")
+            if st.button("⏹️ Stop Sentinel (Set Desired: STOPPED)", disabled=stop_disabled, use_container_width=True):
+                ok, msg = set_worker_desired_state(current_user_id, "STOPPED", user_client)
+                if ok:
+                    st.info("Sentinel desired state set to STOPPED.")
+                    st.rerun()
+                else:
+                    st.error(f"Failed to update desired state: {msg}")
+        with btn_col3:
+            st.caption("ℹ️ Setting Desired State writes control intent to PostgreSQL. No local threads, cron jobs, or IMAP polling processes are launched in Phase 3.")
+
+        # Configuration Tabs
+        tab_settings, tab_mailbox, tab_alerts, tab_health, tab_danger = st.tabs([
+            "⚙️ Worker Settings",
+            "📬 Mailbox Config",
+            "📱 Mobile Alerts",
+            "🩺 Checkpoint & Health",
+            "⚠️ Danger Zone"
+        ])
+
+        with tab_settings:
+            st.markdown("##### ⚙️ Worker Execution Parameters")
+            new_poll = st.slider(
+                "Mailbox Polling Interval (seconds)",
+                min_value=MIN_POLL_INTERVAL_SECONDS,
+                max_value=MAX_POLL_INTERVAL_SECONDS,
+                value=int(current_poll_interval),
+                step=10,
+                help=f"Minimum {MIN_POLL_INTERVAL_SECONDS}s, Maximum {MAX_POLL_INTERVAL_SECONDS}s. Enforced to prevent mailbox rate limiting and ensure fairness."
+            )
+            if st.button("💾 Save Worker Settings", key="btn_save_worker_settings"):
+                ok, res = upsert_user_worker(current_user_id, new_poll, current_desired_state, user_client)
+                if ok:
+                    st.success(f"Worker poll interval updated to {new_poll} seconds.")
+                    st.rerun()
+                else:
+                    st.error(f"Error saving worker settings: {res}")
+
+        with tab_mailbox:
+            st.markdown("##### 📬 Mailbox Synchronization Configuration")
+            st.info(
+                "🔐 **Blind Storage & Credential Security**: In EMAILSHIELD INDIA's zero-trust architecture, "
+                "presentation-layer code cannot read or store plaintext passwords. Mailbox credentials will be "
+                "provisioned via isolated worker encryption (AES-256-GCM with context binding) during Phase 4."
+            )
+
+            mb_provider = mailbox_rec.get("provider", "gmail") if mailbox_rec else "gmail"
+            prov_idx = ALLOWED_PROVIDERS.index(mb_provider) if mb_provider in ALLOWED_PROVIDERS else 0
+            sel_provider = st.selectbox("Mail Provider", ALLOWED_PROVIDERS, index=prov_idx, key="sentinel_mb_prov")
+
+            default_host = PROVIDER_IMAP_DEFAULTS.get(sel_provider, {}).get("host", "")
+            current_host = mailbox_rec.get("imap_host", default_host) if mailbox_rec else default_host
+            default_port = PROVIDER_IMAP_DEFAULTS.get(sel_provider, {}).get("port", 993)
+            current_port = mailbox_rec.get("imap_port", default_port) if mailbox_rec else default_port
+
+            mb_email = st.text_input(
+                "Mailbox Email Address",
+                value=mailbox_rec.get("email_address", "") if mailbox_rec else "",
+                placeholder="investigator@example.com",
+                key="sentinel_mb_email"
+            )
+            col_mb_h, col_mb_p = st.columns([3, 1])
+            with col_mb_h:
+                mb_host = st.text_input("IMAP Host", value=current_host, key="sentinel_mb_host")
+            with col_mb_p:
+                mb_port = st.number_input("Port", min_value=1, max_value=65535, value=int(current_port), key="sentinel_mb_port")
+
+            col_mb_c1, col_mb_c2 = st.columns(2)
+            with col_mb_c1:
+                mb_ssl = st.checkbox("Require SSL/TLS", value=mailbox_rec.get("use_ssl", True) if mailbox_rec else True, key="sentinel_mb_ssl")
+            with col_mb_c2:
+                mb_active = st.checkbox("Mailbox Monitoring Active", value=mailbox_rec.get("is_active", True) if mailbox_rec else True, key="sentinel_mb_active")
+
+            if st.button("💾 Save Mailbox Metadata", key="btn_save_mailbox_meta"):
+                if not has_worker:
+                    ok_w, w_data = upsert_user_worker(current_user_id, current_poll_interval, "STOPPED", user_client)
+                    if not ok_w:
+                        st.error(f"Failed to initialize worker record: {w_data}")
+                    else:
+                        worker_id = w_data["id"]
+                        ok_m, msg_m = save_user_mailbox_metadata(
+                            current_user_id, worker_id, sel_provider, mb_email, mb_host, mb_port, mb_ssl, "APP_PASSWORD", mb_active, user_client
+                        )
+                        if ok_m:
+                            st.success(msg_m)
+                            st.rerun()
+                        else:
+                            st.error(msg_m)
+                else:
+                    worker_id = worker_rec["id"]
+                    ok_m, msg_m = save_user_mailbox_metadata(
+                        current_user_id, worker_id, sel_provider, mb_email, mb_host, mb_port, mb_ssl, "APP_PASSWORD", mb_active, user_client
+                    )
+                    if ok_m:
+                        st.success(msg_m)
+                        st.rerun()
+                    else:
+                        st.error(msg_m)
+
+        with tab_alerts:
+            st.markdown("##### 📱 Real-Time Forensic Alert Routing")
+            st.caption("Configure automated Telegram or WhatsApp dispatches for critical threats.")
+
+            alert_col1, alert_col2 = st.columns(2)
+            tg_config = next((a for a in alerts_rec if a.get("channel") == "telegram"), None)
+            wa_config = next((a for a in alerts_rec if a.get("channel") == "whatsapp"), None)
+
+            with alert_col1:
+                st.markdown("**✈️ Telegram Alerts**")
+                tg_target = st.text_input("Telegram Chat ID", value=tg_config.get("destination_target", "") if tg_config else "", placeholder="e.g. 123456789", key="sentinel_tg_target")
+                tg_high = st.checkbox("High-Risk Only (Score ≥ 70)", value=tg_config.get("high_risk_only", True) if tg_config else True, key="sentinel_tg_high")
+                tg_enabled = st.checkbox("Enable Telegram Alerts", value=tg_config.get("is_enabled", False) if tg_config else False, key="sentinel_tg_enabled")
+                if st.button("💾 Save Telegram Config", key="btn_save_tg_config"):
+                    if not has_worker:
+                        ok_w, w_data = upsert_user_worker(current_user_id, current_poll_interval, "STOPPED", user_client)
+                        worker_id = w_data["id"] if ok_w else None
+                    else:
+                        worker_id = worker_rec["id"]
+                    if worker_id:
+                        ok_a, msg_a = save_user_alert_metadata(current_user_id, worker_id, "telegram", tg_target, tg_enabled, tg_high, user_client)
+                        if ok_a:
+                            st.success(msg_a)
+                            st.rerun()
+                        else:
+                            st.error(msg_a)
+                    else:
+                        st.error("Worker record required before saving alert config.")
+
+            with alert_col2:
+                st.markdown("**💬 WhatsApp Alerts**")
+                wa_target = st.text_input("WhatsApp Phone (E.164)", value=wa_config.get("destination_target", "") if wa_config else "", placeholder="e.g. +919876543210", key="sentinel_wa_target")
+                wa_high = st.checkbox("High-Risk Only (Score ≥ 70)", value=wa_config.get("high_risk_only", True) if wa_config else True, key="sentinel_wa_high")
+                wa_enabled = st.checkbox("Enable WhatsApp Alerts", value=wa_config.get("is_enabled", False) if wa_config else False, key="sentinel_wa_enabled")
+                if st.button("💾 Save WhatsApp Config", key="btn_save_wa_config"):
+                    if not has_worker:
+                        ok_w, w_data = upsert_user_worker(current_user_id, current_poll_interval, "STOPPED", user_client)
+                        worker_id = w_data["id"] if ok_w else None
+                    else:
+                        worker_id = worker_rec["id"]
+                    if worker_id:
+                        ok_a, msg_a = save_user_alert_metadata(current_user_id, worker_id, "whatsapp", wa_target, wa_enabled, wa_high, user_client)
+                        if ok_a:
+                            st.success(msg_a)
+                            st.rerun()
+                        else:
+                            st.error(msg_a)
+                    else:
+                        st.error("Worker record required before saving alert config.")
+
+        with tab_health:
+            st.markdown("##### 🩺 Mailbox Checkpoint & Synchronization Health")
+            st.caption("🔒 **Strictly Read-Only**: Checkpoints are updated exclusively by autonomous workers to track synchronization progress and error backoff.")
+            if checkpoint_rec:
+                h_col1, h_col2 = st.columns(2)
+                with h_col1:
+                    st.text(f"Folder: {checkpoint_rec.get('folder_name', 'INBOX')}")
+                    st.text(f"UID Validity: {checkpoint_rec.get('uid_validity', 0)}")
+                    st.text(f"Last Processed UID: {checkpoint_rec.get('last_processed_uid', 0)}")
+                with h_col2:
+                    st.text(f"Last Scan: {checkpoint_rec.get('last_scan_timestamp', 'Never')}")
+                    st.text(f"Last Processed Date: {checkpoint_rec.get('last_processed_date', 'N/A')}")
+                    st.text(f"Checkpoint Hash: {str(checkpoint_rec.get('checkpoint_hash', 'None'))[:16]}...")
+            else:
+                st.info("ℹ️ No checkpoint record found. A checkpoint will be initialized when the Sentinel worker performs its initial mailbox sweep.")
+
+            if worker_rec and worker_rec.get("last_error"):
+                st.error(f"⚠️ Last Worker Error: {worker_rec.get('last_error')} (Count: {worker_rec.get('error_count', 0)})")
+            elif worker_rec:
+                st.success("✅ No worker execution errors reported.")
+
+        with tab_danger:
+            st.markdown("##### ⚠️ Sentinel Lifecycle & Configuration Reset")
+            st.write("Manage Sentinel worker deactivation or complete configuration removal.")
+
+            d_col1, d_col2 = st.columns(2)
+            with d_col1:
+                st.markdown("**Deactivate Sentinel**")
+                st.caption("Stops the desired state and pauses mailbox monitoring and alerts without deleting configuration history.")
+                if st.button("⏸️ Deactivate Sentinel", key="btn_deactivate_sentinel"):
+                    ok_d, msg_d = deactivate_user_sentinel(current_user_id, user_client)
+                    if ok_d:
+                        st.warning(msg_d)
+                        st.rerun()
+                    else:
+                        st.error(msg_d)
+
+            with d_col2:
+                st.markdown("**Delete Configuration**")
+                st.caption("Permanently removes worker, mailbox metadata, and alert configurations from the database.")
+                confirm_delete = st.checkbox("I confirm I want to permanently delete my Sentinel configuration", key="chk_confirm_delete")
+                if st.button("🗑️ Permanently Delete Sentinel", disabled=not confirm_delete, type="primary", key="btn_delete_sentinel"):
+                    ok_del, msg_del = delete_user_sentinel_config(current_user_id, user_client)
+                    if ok_del:
+                        st.success(msg_del)
+                        st.rerun()
+                    else:
+                        st.error(msg_del)
 
 # View 3: Single Case Investigation
 elif selected_nav == "🔍 Single Case Investigation":
