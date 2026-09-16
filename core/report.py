@@ -7,6 +7,8 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from typing import Dict, Any
 
+import io
+
 def safe_text(val: Any, max_len: int = None) -> str:
     """Safely truncates and XML-escapes text for ReportLab Paragraphs to prevent unclosed tag errors."""
     if val is None:
@@ -16,12 +18,30 @@ def safe_text(val: Any, max_len: int = None) -> str:
         s = s[:max_len] + "..."
     return html.escape(s)
 
-def generate_json_report(case_data: Dict[str, Any], filepath: str):
-    with open(filepath, 'w') as f:
-        json.dump(case_data, f, indent=4, default=str)
-        
-def generate_pdf_report(case_data: Dict[str, Any], filepath: str):
-    doc = SimpleDocTemplate(filepath, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+def generate_json_report(case_data: Dict[str, Any], filepath: Any = None, output_path: Any = None) -> Any:
+    """Serialize case data to formatted JSON string or write to file/stream."""
+    target = output_path if output_path is not None else filepath
+    json_str = json.dumps(case_data, indent=4, default=str)
+    if target is None:
+        return json_str
+    if isinstance(target, str):
+        with open(target, 'w', encoding='utf-8') as f:
+            f.write(json_str)
+        return json_str
+    elif hasattr(target, 'write'):
+        if isinstance(target, io.BytesIO):
+            target.write(json_str.encode('utf-8'))
+            target.seek(0)
+        else:
+            target.write(json_str)
+        return target
+    return json_str
+
+def generate_pdf_report(case_data: Dict[str, Any], filepath: Any = None, output_path: Any = None) -> Any:
+    """Generate PDF evidence report to file path or in-memory BytesIO buffer."""
+    target = output_path if output_path is not None else filepath
+    target = target if target is not None else io.BytesIO()
+    doc = SimpleDocTemplate(target, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     
     # Custom styles
@@ -176,5 +196,8 @@ def generate_pdf_report(case_data: Dict[str, Any], filepath: str):
     elements.append(Paragraph(disclaimer, ParagraphStyle('Legal', parent=styles['Normal'], fontSize=7, leading=9, textColor=colors.HexColor('#64748b'))))
 
     doc.build(elements)
+    if hasattr(target, "seek"):
+        target.seek(0)
+    return target
 
 

@@ -1,7 +1,6 @@
 import re
 import html
 from typing import Dict, Any, List, Optional
-from core.gmail_integration import fetch_recent_emails, fetch_raw_email
 from core.parser import SecureEmailParser
 from core.risk import evaluate_rules, calculate_hybrid_risk
 from core.auth_claims import evaluate_auth_and_alignment
@@ -174,12 +173,13 @@ def scan_mailbox_batch(
     raw_fetcher_fn=None
 ) -> Dict[str, Any]:
     """Scans a batch of emails and returns aggregated analytics."""
-    if custom_emails is not None and raw_fetcher_fn is not None:
-        emails = custom_emails[:max_emails]
-        fetcher = raw_fetcher_fn
-    else:
-        emails = fetch_recent_emails(max_emails, query=query)
-        fetcher = fetch_raw_email
+    if custom_emails is None or raw_fetcher_fn is None:
+        raise ValueError(
+            "Session-scoped mailbox input is required; "
+            "global Gmail OAuth fallback is disabled."
+        )
+    emails = custom_emails[:max_emails]
+    fetcher = raw_fetcher_fn
     
     analytics = {
         "total_scanned": len(emails),

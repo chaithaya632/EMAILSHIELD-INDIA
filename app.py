@@ -8,7 +8,9 @@ from core.auth_claims import parse_auth_results, evaluate_auth_and_alignment
 from core.geolocation import get_geolocation, get_sender_location, is_public_ip
 from core.risk import evaluate_rules, calculate_hybrid_risk
 from core.classifier import MLClassifier
-from core.case_store import save_case, update_case_metadata, get_case_record, export_case_iocs_csv, export_case_iocs_json
+import io
+from core.case_store import save_case, update_case_metadata, get_case_record, export_case_iocs_csv, export_case_iocs_json, get_all_cases
+from core.supabase_client import is_supabase_configured, get_supabase_client, sign_in_user, sign_up_user, sign_out_user
 from core.report import generate_pdf_report, generate_json_report
 from core.schemas import (
     CaseReport, Indicator, GeolocationInfo, AuthEvidence, RuleFinding,
@@ -46,6 +48,64 @@ forensic_agent = AutonomousForensicAgent(ml_classifier)
 
 st.title("🛡️ EMAILSHIELD INDIA")
 st.subheader("AI-Powered Email Threat Detection, Geolocation & Forensic Intelligence Platform")
+
+st.sidebar.markdown("### 🔐 Investigator Access")
+if is_supabase_configured():
+    if "user_id" not in st.session_state or not st.session_state["user_id"]:
+        auth_tab1, auth_tab2 = st.sidebar.tabs(["Sign In", "Register"])
+        with auth_tab1:
+            login_email = st.text_input("Email:", key="sb_login_email")
+            login_pass = st.text_input("Password:", type="password", key="sb_login_pass")
+            if st.button("Sign In", type="primary", key="btn_sb_login"):
+                if login_email and login_pass:
+                    ok, res = sign_in_user(login_email, login_pass)
+                    if ok:
+                        st.session_state["user_id"] = res.user.id
+                        st.session_state["user_email"] = res.user.email
+                        st.session_state["supabase_auth_token"] = res.access_token
+                        st.success(f"Welcome, {res.user.email}!")
+                        st.rerun()
+                    else:
+                        st.error(res)
+                else:
+                    st.warning("Please enter email and password.")
+        with auth_tab2:
+            reg_name = st.text_input("Investigator Name:", key="sb_reg_name")
+            reg_email = st.text_input("Email:", key="sb_reg_email")
+            reg_pass = st.text_input("Password:", type="password", key="sb_reg_pass")
+            if st.button("Create Account", key="btn_sb_reg"):
+                if reg_email and reg_pass:
+                    ok, res = sign_up_user(reg_email, reg_pass, display_name=reg_name)
+                    if ok:
+                        if hasattr(res, "user"):
+                            st.session_state["user_id"] = res.user.id
+                            st.session_state["user_email"] = res.user.email
+                            st.session_state["supabase_auth_token"] = res.access_token
+                        st.success("Account created successfully!")
+                        st.rerun()
+                    else:
+                        st.error(res)
+                else:
+                    st.warning("Please enter email and password.")
+        st.sidebar.markdown("---")
+    else:
+        u_email = st.session_state.get("user_email", "Investigator")
+        c_u1, c_u2 = st.sidebar.columns([3, 1])
+        with c_u1:
+            st.sidebar.markdown(f"👤 **Investigator:** `{u_email[:20]}`")
+            st.sidebar.caption("🛡️ Private RLS workspace")
+        with c_u2:
+            if st.sidebar.button("Logout", key="btn_sb_logout", help="Sign out and purge session"):
+                sign_out_user(st.session_state.get("supabase_auth_token"))
+                st.session_state.clear()
+                st.rerun()
+        st.sidebar.markdown("---")
+else:
+    st.sidebar.caption("ℹ️ **Local Sandbox Mode** (No Supabase credentials configured)")
+    st.sidebar.markdown("---")
+
+user_client = get_supabase_client(st.session_state.get("supabase_auth_token")) if is_supabase_configured() and st.session_state.get("supabase_auth_token") else None
+current_user_id = st.session_state.get("user_id")
 
 st.sidebar.header("📬 Connect Mailbox")
 st.sidebar.write("Inspect live inboxes directly without cloud console setup.")
@@ -586,7 +646,7 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                 indicators.append(Indicator(type="Hash", value=att.sha256, source=f"Attachment:{att.filename}"))
 
         # Restore existing case management notes/status if case was already opened
-        existing_rec = get_case_record(case_id)
+        existing_rec = get_case_record(case_id, client=user_client)
         current_status = existing_rec.get("status", "Open") if existing_rec else "Open"
         current_inv = existing_rec.get("assigned_investigator", "Unassigned") if existing_rec else "Unassigned"
         current_notes = existing_rec.get("analyst_notes", "") if existing_rec else ""
@@ -628,8 +688,8 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             risk_reasons=reasons
         )
         
-        # Save to SQLite
-        save_case(case_report.model_dump())
+        # Save to Supabase (with RLS) or local sandbox fallback
+        save_case(case_report.model_dump(), user_id=current_user_id, client=user_client)
         
         col_succ, col_rst = st.columns([3, 1])
         with col_succ:
@@ -999,7 +1059,7 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             with col_exp1:
                 st.download_button(
                     "📄 Export Case IOCs (CSV)",
-                    export_case_iocs_csv(case_id),
+                    export_case_iocs_csv(case_id, client=user_client),
                     file_name=f"{case_id}_iocs.csv",
                     mime="text/csv",
                     use_container_width=True
@@ -1007,7 +1067,7 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             with col_exp2:
                 st.download_button(
                     "⚡ Export Case IOCs (JSON)",
-                    export_case_iocs_json(case_id),
+                    export_case_iocs_json(case_id, client=user_client),
                     file_name=f"{case_id}_iocs.json",
                     mime="application/json",
                     use_container_width=True
@@ -1299,59 +1359,44 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
             new_notes = st.text_area("Analyst Case Notes / Investigation Remarks:", value=current_notes, height=120)
             
             if st.button("💾 Save Case Notes & Status", type="primary"):
-                update_case_metadata(case_id, status=new_status, investigator=new_investigator, notes=new_notes)
+                update_case_metadata(case_id, status=new_status, investigator=new_investigator, notes=new_notes, client=user_client)
                 st.success(f"Case {case_id} updated: Status='{new_status}', Investigator='{new_investigator}'")
                 
             st.markdown("---")
             st.subheader("Export Investigation Reports")
 
-            os.makedirs("data/reports", exist_ok=True)
-            pdf_path = f"data/reports/{case_id}.pdf"
-            json_path = f"data/reports/{case_id}.json"
+            # In-Memory Report Streaming (Zero disk persistence)
+            pdf_bytes = io.BytesIO()
+            generate_pdf_report(updated_case_dict, pdf_bytes)
             
-            # Re-fetch updated metadata for PDF & NCRP packager
-            updated_case_dict = case_report.model_dump()
-            updated_case_dict["status"] = new_status
-            updated_case_dict["assigned_investigator"] = new_investigator
-            updated_case_dict["investigator"] = new_investigator
-            updated_case_dict["analyst_notes"] = new_notes
-            updated_case_dict["body_text"] = full_email_body
-            updated_case_dict["sha256"] = case_report.original_sha256
-            if geolocations:
-                updated_case_dict["originating_ip"] = geolocations[0].ip
-            
-            generate_pdf_report(updated_case_dict, pdf_path)
-            generate_json_report(updated_case_dict, json_path)
+            json_str = generate_json_report(updated_case_dict)
             
             col_d1, col_d2 = st.columns(2)
             with col_d1:
-                with open(pdf_path, "rb") as f:
-                    st.download_button("📜 Download Forensic Evidence Report (PDF)", f, file_name=f"{case_id}_forensic_report.pdf", mime="application/pdf", use_container_width=True)
+                st.download_button("📜 Download Forensic Evidence Report (PDF)", pdf_bytes, file_name=f"{case_id}_forensic_report.pdf", mime="application/pdf", use_container_width=True)
             with col_d2:
-                with open(json_path, "rb") as f:
-                    st.download_button("⚡ Download Full Forensic JSON", f, file_name=f"{case_id}.json", mime="application/json", use_container_width=True)
+                st.download_button("⚡ Download Full Forensic JSON", json_str, file_name=f"{case_id}.json", mime="application/json", use_container_width=True)
 
-            # Indian Cybercrime (I4C / NCRP-Oriented Evidence Pack)
+            # Indian Cybercrime (BSA 2023 Section 63(4)(c) / NCRP-Oriented Evidence Pack)
             st.markdown("---")
-            st.subheader("🇮🇳 Indian Cybercrime (I4C / NCRP-Oriented Evidence Pack)")
-            st.caption("Structured electronic evidence package aligned with I4C/NCRP reporting formats:")
+            st.subheader("🇮🇳 Indian Cybercrime Evidence Pack — Section 63(4)(c) BSA / NCRP")
+            st.caption("Structured electronic evidence-supporting documentation under Section 63(4)(c) of the Bharatiya Sakshya Adhiniyam, 2023 (BSA) aligned with I4C / cybercrime.gov.in reporting standards:")
             
             ncrp_text = generate_ncrp_complaint_text(updated_case_dict)
             st.text_area("NCRP Portal Complaint Draft (Copy & Paste ready for cybercrime.gov.in):", value=ncrp_text, height=180)
             
-            ncrp_pdf_path = f"data/reports/NCRP_{case_id}.pdf"
-            generate_ncrp_pdf_annexure(updated_case_dict, ncrp_pdf_path)
+            ncrp_pdf_bytes = io.BytesIO()
+            generate_ncrp_pdf_annexure(updated_case_dict, ncrp_pdf_bytes)
             
             col_pkg1, col_pkg2 = st.columns(2)
             with col_pkg1:
-                with open(ncrp_pdf_path, "rb") as nf:
-                    st.download_button(
-                        "🇮🇳 Download Electronic Evidence Annexure (PDF)",
-                        nf,
-                        file_name=f"I4C_NCRP_Annexure_{case_id}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
+                st.download_button(
+                    "🇮🇳 Download Section 63(4)(c) BSA Evidence Annexure (PDF)",
+                    ncrp_pdf_bytes,
+                    file_name=f"BSA_Sec63_Annexure_{case_id}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
             with col_pkg2:
                 sanitized_eml_bytes, def_cnt, quar_cnt = sanitize_eml_content(bytes_data)
                 st.download_button(
@@ -1362,6 +1407,24 @@ Connect Gmail, Outlook, Yahoo, or Zoho Mail in seconds with <b>$0 investment</b>
                     use_container_width=True,
                     help="Safe shareable evidence copy: all URLs neutralized to hxxps and weaponized attachments quarantined to forensic warning placeholders."
                 )
+
+            # User-Scoped Investigation History (RLS Filtered)
+            user_cases = get_all_cases(client=user_client)
+            if user_cases:
+                st.markdown("---")
+                st.subheader("📁 My Historical Investigations")
+                st.caption(f"Displaying **{len(user_cases)}** cases owned by your investigator profile:")
+                c_hist_rows = []
+                for uc in user_cases[:15]:
+                    c_hist_rows.append({
+                        "Case ID": uc.get("case_id"),
+                        "Date": str(uc.get("timestamp", "N/A"))[:19],
+                        "Subject": str(uc.get("subject", "N/A"))[:35],
+                        "Verdict": uc.get("threat_verdict", "N/A"),
+                        "Status": uc.get("status", "Open"),
+                        "Severity": uc.get("case_severity", "MEDIUM")
+                    })
+                st.dataframe(c_hist_rows, use_container_width=True)
 
         with tab8:
             st.subheader("⚖️ Forensic Header Diff & Baseline Comparator")
