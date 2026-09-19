@@ -5,6 +5,16 @@ import re
 from typing import Dict, Any, Optional, Tuple, List
 import requests
 
+__all__ = [
+    "get_geolocation",
+    "get_sender_location",
+    "is_public_ip",
+    "derive_authoritative_location",
+    "extract_originating_sender_ip",
+    "extract_originating_sender_telemetry",
+    "resolve_hostname_supplementary",
+]
+
 # Supported local offline databases
 MMDB_CANDIDATES = [
     os.path.join("data", "geoip", "GeoLite2-City.mmdb"),
@@ -117,10 +127,11 @@ def get_geolocation(ip_str: str) -> Dict[str, Any]:
             status = f"MMDB error: {str(e)}"
 
     # Step 2: Live enrichment for exact city/region/ISP if city is unknown or offline DB was coarse
-    if city == "UNKNOWN" or region == "UNKNOWN" or country == "UNKNOWN":
+    # Enforces HTTPS and respects optional zero-outbound environment guard
+    if (city == "UNKNOWN" or region == "UNKNOWN" or country == "UNKNOWN") and os.environ.get("ENABLE_LIVE_GEOIP", "1").lower() in ("1", "true"):
         try:
             resp = requests.get(
-                f"http://ip-api.com/json/{cleaned_ip}?fields=status,message,country,regionName,city,lat,lon,isp,org,as,query",
+                f"https://ip-api.com/json/{cleaned_ip}?fields=status,message,country,regionName,city,lat,lon,isp,org,as,query",
                 timeout=2.0
             )
             if resp.status_code == 200:
@@ -202,6 +213,15 @@ def extract_originating_sender_telemetry(
         if val:
             val_str = " ".join(val) if isinstance(val, list) else str(val)
             matches = re.findall(r'(?:[0-9]{1,3}\.){3}[0-9]{1,3}', val_str)
+            ipv6_candidates = re.findall(r'\[?([0-9a-fA-F:]{3,39})\]?', val_str)
+            for cand in ipv6_candidates:
+                if ":" in cand:
+                    try:
+                        ip_obj = ipaddress.ip_address(cand)
+                        if ip_obj.version == 6:
+                            matches.append(str(ip_obj))
+                    except ValueError:
+                        pass
             for ip in matches:
                 if is_public_ip(ip):
                     return {
@@ -323,7 +343,7 @@ def resolve_hostname_supplementary(hostname: Optional[str]) -> Dict[str, Any]:
     clean_host = hostname.strip("[]() :")
     try:
         orig_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(1.0)
+        socket.setdefaulttimeout(2.5)
         try:
             resolved_ip = socket.gethostbyname(clean_host)
         finally:
@@ -466,4 +486,150 @@ def get_sender_location(
         "attribution_disclaimer": attribution_disclaimer,
         "relay_masked_explanation": relay_masked_explanation
     }
+
+
+def derive_authoritative_location(case_data: Any) -> Dict[str, Any]:
+    """
+    Derives the authoritative sender and origin infrastructure location dictionary
+    from a CaseReport instance or case dictionary without duplicate GeoIP queries.
+
+    Preserves all SIH26106 infrastructure indicators and fields:
+    - is_identified: bool
+    - display_location: str (e.g., "City, Region, Country 🇮🇳" or "Unavailable")
+    - sender_ip: originating public IP or relay-masked status
+    - country, region, city
+    - latitude, longitude
+    - ISP / organization (org / isp)
+    - ASN
+    - hosting provider / cloud provider
+    - confidence score
+    - attribution limitations & relay-masked disclaimers
+    """
+    attribution_disclaimer = (
+        "Geo-IP provides approximate geographic/infrastructure context for the identified IP. "
+        "It does not prove the physical location or identity of the human sender. "
+        "VPNs, proxies, shared infrastructure, webmail providers and relays may obscure the original client location."
+    )
+    relay_masked_explanation = (
+        "The available email telemetry does not expose a reliable public client/originating IP. "
+        "The displayed relay/domain information represents mail infrastructure rather than proof of the sender's device IP."
+    )
+
+    res: Dict[str, Any] = {
+        "sender_address": "Unknown",
+        "sender_email": "Unknown",
+        "sender_display_name": "",
+        "return_path": "Not specified",
+        "return_path_differs": False,
+        "sender_ip": "Unavailable / Relay-masked",
+        "ip_classification": "Relay-masked",
+        "ip_source": "No public sender IP in headers",
+        "raw_header_evidence": "",
+        "is_identified": False,
+        "is_client_ip": False,
+        "country": "Unknown",
+        "region": "Unknown",
+        "city": "Unknown",
+        "flag": "🌐",
+        "display_location": "Unavailable",
+        "latitude": None,
+        "longitude": None,
+        "org": "Unknown Network",
+        "asn": "Unknown ASN",
+        "cloud_provider": "None",
+        "hosting_provider": "None",
+        "confidence": 0,
+        "db_provider": "N/A",
+        "status": "No public sender IP found",
+        "dns_intelligence": {},
+        "attribution_disclaimer": attribution_disclaimer,
+        "relay_masked_explanation": relay_masked_explanation,
+    }
+
+    if not case_data:
+        return res
+
+    if isinstance(case_data, dict):
+        raw_sloc = case_data.get("sender_location")
+        infra = case_data.get("infrastructure_intel")
+    else:
+        raw_sloc = getattr(case_data, "sender_location", None)
+        infra = getattr(case_data, "infrastructure_intel", None)
+
+    if hasattr(raw_sloc, "model_dump"):
+        raw_sloc = raw_sloc.model_dump()
+
+    if hasattr(infra, "model_dump"):
+        infra_dict = infra.model_dump()
+    elif isinstance(infra, dict):
+        infra_dict = infra
+    elif infra is not None:
+        try:
+            infra_dict = infra.__dict__
+        except Exception:
+            infra_dict = None
+    else:
+        infra_dict = None
+
+    if isinstance(raw_sloc, dict) and raw_sloc:
+        res.update(raw_sloc)
+        if raw_sloc.get("is_identified"):
+            res["is_identified"] = True
+            if not res.get("display_location") or res.get("display_location") == "Unavailable":
+                parts = [p for p in [res.get("city"), res.get("region"), res.get("country")] if p and p != "Unknown"]
+                res["display_location"] = f"{', '.join(parts)} {res.get('flag', '🌐')}".strip() if parts else "Unknown Location 🌐"
+        else:
+            res["is_identified"] = False
+            if res.get("display_location") in [None, "", "Sender Location Unavailable"]:
+                res["display_location"] = "Unavailable"
+
+    if isinstance(infra_dict, dict) and infra_dict:
+        if not res.get("is_identified"):
+            orig_ip = infra_dict.get("origin_ip")
+            cntry = infra_dict.get("country", "Unknown")
+            if orig_ip and orig_ip not in ["Unavailable", "None", "0.0.0.0", ""] and cntry != "Unknown":
+                res["is_identified"] = True
+                res["sender_ip"] = orig_ip
+                res["country"] = cntry
+                res["region"] = infra_dict.get("region", "Unknown")
+                res["city"] = infra_dict.get("city", "Unknown")
+                flag = infra_dict.get("flag", "🌐")
+                res["flag"] = flag
+                parts = [p for p in [res["city"], res["region"], res["country"]] if p and p != "Unknown"]
+                res["display_location"] = f"{', '.join(parts)} {flag}".strip() if parts else f"Unknown Location {flag}"
+                res["org"] = infra_dict.get("isp") or "Unknown ISP"
+                res["asn"] = infra_dict.get("asn") or "Unknown ASN"
+                res["latitude"] = infra_dict.get("latitude")
+                res["longitude"] = infra_dict.get("longitude")
+
+        c_ind = infra_dict.get("cloud_indicator")
+        if isinstance(c_ind, dict):
+            p = c_ind.get("provider")
+            if p and p not in ["UNKNOWN", "None / Dedicated / Residential"]:
+                res["cloud_provider"] = p
+                res["hosting_provider"] = p
+        elif hasattr(c_ind, "provider"):
+            p = getattr(c_ind, "provider")
+            if p and p not in ["UNKNOWN", "None / Dedicated / Residential"]:
+                res["cloud_provider"] = p
+                res["hosting_provider"] = p
+
+        if "confidence" in infra_dict and infra_dict["confidence"] is not None:
+            res["confidence"] = infra_dict["confidence"]
+
+        if infra_dict.get("attribution_disclaimer"):
+            res["attribution_disclaimer"] = infra_dict["attribution_disclaimer"]
+
+        if infra_dict.get("asn") and res.get("asn") in [None, "None", "Unknown ASN", "N/A"]:
+            res["asn"] = infra_dict["asn"]
+
+        if infra_dict.get("isp") and res.get("org") in [None, "None", "Unknown Network", "Unknown ISP", "N/A"]:
+            res["org"] = infra_dict["isp"]
+
+        for ind_key in ["vpn_indicator", "tor_indicator", "open_relay_indicator", "botnet_indicator", "threat_intel_match"]:
+            if ind_key in infra_dict:
+                res[ind_key] = infra_dict[ind_key]
+
+    return res
+
 

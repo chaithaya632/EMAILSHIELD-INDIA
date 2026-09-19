@@ -279,6 +279,10 @@ class MockPostgrestTable:
     def order(self, *args, **kwargs):
         return self
 
+    def limit(self, count: int):
+        self._limit = count
+        return self
+
     def or_(self, condition: str):
         self._or_cond = condition
         return self
@@ -492,8 +496,17 @@ def test_multiuser_case_and_indicator_isolation():
 # 5. OFFLINE / LOCAL FALLBACK MODE TEST
 # =====================================================================
 
-def test_offline_local_fallback_mode():
+def test_offline_local_fallback_mode(monkeypatch):
     """Verify that when Supabase client is None (offline / unconfigured), SQLite store works safely."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    try:
+        import streamlit as st
+        monkeypatch.setattr(st, "secrets", {})
+    except Exception:
+        pass
+    assert is_supabase_configured() is False
+
     offline_case = {
         "case_id": "CASE-OFFLINE-01",
         "timestamp": "2026-09-16T11:00:00Z",
@@ -517,18 +530,43 @@ def test_offline_local_fallback_mode():
     assert record["subject"] == "Local Offline Case"
 
 
-def test_supabase_client_helpers_without_env_vars():
+def test_supabase_configured_unauthenticated_fails_closed(monkeypatch):
+    """
+    Verify that when Supabase is configured and client is None (unauthenticated),
+    case store functions strictly fail closed with zero SQLite fallback.
+    """
+    monkeypatch.setenv("SUPABASE_URL", "https://mock-project.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "mock-anon-key-12345")
+    assert is_supabase_configured() is True
+
+    # 1. get_all_cases returns empty list
+    assert get_all_cases(client=None) == []
+
+    # 2. get_case_record returns None
+    assert get_case_record("CASE-OFFLINE-01", client=None) is None
+
+    # 3. get_all_indicators returns empty list
+    assert get_all_indicators(client=None) == []
+
+    # 4. save_case returns False
+    dummy_case = {"case_id": "CASE-UNAUTH-01", "subject": "Unauthenticated Save"}
+    assert save_case(dummy_case, user_id=None, client=None) is False
+    assert save_case(dummy_case, user_id="attacker_user", client=None) is False
+
+    # 5. update_case_metadata returns False
+    assert update_case_metadata("CASE-OFFLINE-01", status="Closed", client=None) is False
+
+
+def test_supabase_client_helpers_without_env_vars(monkeypatch):
     """Verify is_supabase_configured() returns False when environment variables are not set."""
-    # Ensure env vars are temporarily unset
-    old_url = os.environ.pop("SUPABASE_URL", None)
-    old_key = os.environ.pop("SUPABASE_ANON_KEY", None)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
     try:
-        assert is_supabase_configured() is False
-    finally:
-        if old_url:
-            os.environ["SUPABASE_URL"] = old_url
-        if old_key:
-            os.environ["SUPABASE_ANON_KEY"] = old_key
+        import streamlit as st
+        monkeypatch.setattr(st, "secrets", {})
+    except Exception:
+        pass
+    assert is_supabase_configured() is False
 
 
 def test_batch_scanner_fails_closed_without_session_mailbox():

@@ -79,6 +79,18 @@ class MockPostgrestTable:
             self._last_data = [dict(record)]
         return self
 
+    def insert(self, row: Dict[str, Any]):
+        # RLS check: insert must belong to authenticated user
+        if row.get("user_id") != self.auth_uid:
+            raise PermissionError("RLS Violation: Cannot insert record belonging to another user.")
+        table = self.db.setdefault(self.table_name, [])
+        record = dict(row)
+        if "id" not in record:
+            record["id"] = str(uuid.uuid4())
+        table.append(record)
+        self._last_data = [dict(record)]
+        return self
+
     def update(self, updates: Dict[str, Any]):
         self._pending_update = dict(updates)
         return self

@@ -17,6 +17,18 @@ def get_org_domain(domain: str) -> str:
         return ""
     return get_registrable_domain(domain)
 
+
+KNOWN_LEGIT_ESPS = {
+    "sendgrid.net", "mailgun.org", "substack.com", "convertkit.com", "beehiiv.com",
+    "mailchimp.com", "mcsv.net", "mcdlv.net", "amazonses.com", "brevo.com",
+    "hubspot.com", "hubspotemail.net", "klaviyo.com", "activehosted.com",
+    "sparkpostmail.com", "constantcontact.com", "campaignmonitor.com", "cmail1.com",
+    "cmail2.com", "acems1.com", "acems2.com", "intercom-mail.com", "mailerlite.com",
+    "postmarkapp.com", "infusionsoft.com", "dripemail2.com",
+    "gappssmtp.com", "google.com", "googlemail.com", "onmicrosoft.com", "protection.outlook.com"
+}
+
+
 def parse_auth_results(auth_header: str) -> List[Dict[str, str]]:
     """
     Parse Authentication-Results header to extract SPF, DKIM, DMARC claims.
@@ -118,12 +130,17 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
             get_org_domain(header_from_domain) == get_org_domain(envelope_from_domain)
         )
 
-    # DKIM Alignment (Relaxed)
+    # DKIM Alignment (Relaxed & Provider Conventions)
     dkim_aligned = False
     if header_from_domain and dkim_signing_domain:
         dkim_aligned = (header_from_domain == dkim_signing_domain) or (
             get_org_domain(header_from_domain) == get_org_domain(dkim_signing_domain)
         )
+        if not dkim_aligned and dkim_signing_domain.endswith("gappssmtp.com"):
+            # Google Workspace customer domain encoding: <domain-with-hyphens>.<selector>.gappssmtp.com
+            gw_prefix = dkim_signing_domain.split(".gappssmtp.com")[0].split(".")[0].replace("-", ".")
+            if gw_prefix == header_from_domain or get_org_domain(gw_prefix) == get_org_domain(header_from_domain):
+                dkim_aligned = True
 
     # Check if this email is a recognized newsletter or bulk mailing
     is_bulk_newsletter = bool(
@@ -132,16 +149,6 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
         str(headers.get("precedence", "")).lower() == "bulk" or
         headers.get("feedback-id")
     )
-
-    # Known legitimate ESP domains that send on behalf of creators / organizations
-    KNOWN_LEGIT_ESPS = {
-        "sendgrid.net", "mailgun.org", "substack.com", "convertkit.com", "beehiiv.com",
-        "mailchimp.com", "mcsv.net", "mcdlv.net", "amazonses.com", "brevo.com",
-        "hubspot.com", "hubspotemail.net", "klaviyo.com", "activehosted.com",
-        "sparkpostmail.com", "constantcontact.com", "campaignmonitor.com", "cmail1.com",
-        "cmail2.com", "acems1.com", "acems2.com", "intercom-mail.com", "mailerlite.com",
-        "postmarkapp.com", "infusionsoft.com", "dripemail2.com"
-    }
 
     is_esp_delegated = any(
         dkim_signing_domain.endswith(esp) or envelope_from_domain.endswith(esp)

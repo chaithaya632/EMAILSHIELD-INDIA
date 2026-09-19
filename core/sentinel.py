@@ -22,6 +22,8 @@ from core.ai_reasoning import generate_forensic_reasoning
 from core.case_store import save_case
 from core.schemas import RuleFinding
 from core.mailbox_connector import fetch_imap_emails, fetch_imap_raw_email
+from core.telegram_alert import send_telegram_alert, get_telegram_config
+from core.whatsapp_alert import send_whatsapp_alert as dispatch_whatsapp_alert
 
 try:
     from core.gmail_integration import fetch_recent_emails, fetch_raw_email
@@ -109,63 +111,8 @@ def send_whatsapp_alert(phone: str, apikey: str, text: str) -> Tuple[bool, str]:
     Dispatches a direct WhatsApp notification via the 100% free CallMeBot API.
     Phone format: international with country code, e.g. +919876543210
     """
-    clean_phone = re.sub(r'[^\d+]', '', phone.strip())
-    if not clean_phone.startswith('+'):
-        clean_phone = '+' + clean_phone
+    return dispatch_whatsapp_alert(phone, apikey, text)
 
-    clean_key = apikey.strip()
-    if not clean_phone or len(clean_phone) < 10:
-        return False, "Invalid phone number format. Must include country code (e.g. +91XXXXXXXXXX)."
-    if not clean_key:
-        return False, "CallMeBot API key is required."
-
-    encoded_text = urllib.parse.quote(text)
-    url = f"https://api.callmebot.com/whatsapp.php?phone={clean_phone}&text={encoded_text}&apikey={clean_key}"
-
-    try:
-        resp = requests.get(url, timeout=12.0)
-        if resp.status_code == 200:
-            if "error" in resp.text.lower():
-                return False, f"CallMeBot Error: {resp.text.strip()[:100]}"
-            return True, "WhatsApp alert successfully delivered to phone."
-        return False, f"HTTP {resp.status_code}: {resp.text[:100]}"
-    except Exception as e:
-        return False, f"WhatsApp dispatch failed: {str(e)}"
-
-def send_telegram_alert(bot_token: str, chat_id: str, text: str) -> Tuple[bool, str]:
-    """
-    Dispatches an instant alert notification via the official Telegram Bot API.
-    """
-    token = bot_token.strip()
-    cid = chat_id.strip()
-
-    if not token or ":" not in token:
-        return False, "Invalid Telegram Bot Token format."
-    if not cid:
-        return False, "Telegram Chat ID is required."
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": cid,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-
-    try:
-        resp = requests.post(url, json=payload, timeout=12.0)
-        data = resp.json()
-        if resp.status_code == 200 and data.get("ok"):
-            return True, "Telegram alert successfully delivered."
-        err_desc = data.get("description", resp.text[:100])
-        if "chat not found" in err_desc.lower():
-            return False, (
-                "Telegram error: 'Chat not found'.\n"
-                "👉 Fix: Open your bot in Telegram and click 'START' (bots cannot message you until you press Start).\n"
-                "👉 Also ensure Chat ID is your numeric ID (from @userinfobot), not your @username."
-            )
-        return False, f"Telegram error: {err_desc}"
-    except Exception as e:
-        return False, f"Telegram dispatch failed: {str(e)}"
 
 def send_test_alert(channel: str, config: Dict[str, str]) -> Tuple[bool, str]:
     """Sends an immediate test ping so the user can verify their phone notification setup."""
@@ -180,7 +127,10 @@ def send_test_alert(channel: str, config: Dict[str, str]) -> Tuple[bool, str]:
     if channel.lower() == "whatsapp":
         return send_whatsapp_alert(config.get("whatsapp_phone", ""), config.get("whatsapp_apikey", ""), test_msg)
     elif channel.lower() == "telegram":
-        return send_telegram_alert(config.get("telegram_token", ""), config.get("telegram_chat_id", ""), test_msg)
+        tg_cfg = get_telegram_config(config)
+        token = tg_cfg.get("token") or config.get("telegram_token", "")
+        chat_id = tg_cfg.get("chat_id") or config.get("telegram_chat_id", "")
+        return send_telegram_alert(token, chat_id, test_msg)
     return False, f"Unknown notification channel '{channel}'."
 
 
@@ -608,8 +558,9 @@ class SentinelManager:
 
             # Dispatch Telegram
             if alert_cfg.get("telegram_enabled"):
-                token = alert_cfg.get("telegram_token", "")
-                chat_id = alert_cfg.get("telegram_chat_id", "")
+                tg_cfg = get_telegram_config(alert_cfg)
+                token = tg_cfg.get("token") or alert_cfg.get("telegram_token", "")
+                chat_id = tg_cfg.get("chat_id") or alert_cfg.get("telegram_chat_id", "")
                 t_ok, t_msg = send_telegram_alert(token, chat_id, alert_text)
                 if t_ok:
                     alert_dispatched = True

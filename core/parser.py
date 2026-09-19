@@ -39,22 +39,57 @@ def decode_mime_words(raw_header: Any) -> str:
     except Exception:
         return raw_header.strip()
 
+import os
+import re
+
+MAX_RAW_EMAIL_SIZE_BYTES = 10 * 1024 * 1024  # 10MB hard limit for raw uploaded email
+MAX_HEADER_COUNT = 250                       # Maximum number of headers inspected
+MAX_HEADER_VALUE_LEN = 32 * 1024             # 32KB limit per header value
+MAX_BODY_CHARS = 1024 * 1024                 # 1MB limit for extracted plain/HTML text
+MAX_ATTACHMENT_COUNT = 25                    # Maximum attachment metadata entries
+MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024 # 10MB limit per attachment payload
+MAX_MIME_PARTS = 100                         # Maximum MIME tree parts walked
+
+
+def sanitize_attachment_filename(filename: str) -> str:
+    """Sanitize attachment filename to prevent path traversal or unsafe characters."""
+    if not filename or not isinstance(filename, str):
+        return "attachment.bin"
+    normalized = filename.replace("\\", "/")
+    base = os.path.basename(normalized)
+    clean = re.sub(r'[^a-zA-Z0-9_.-]', '_', base).strip('._')
+    return clean or "attachment.bin"
+
+
 class SecureEmailParser:
     def __init__(self, raw_bytes: Any):
         if raw_bytes is None:
             raw_bytes = b""
         elif isinstance(raw_bytes, str):
             raw_bytes = raw_bytes.encode('utf-8', errors='replace')
+        if len(raw_bytes) > MAX_RAW_EMAIL_SIZE_BYTES:
+            raise ValueError(
+                f"Email payload exceeds maximum allowed size ({len(raw_bytes)} bytes > {MAX_RAW_EMAIL_SIZE_BYTES} bytes)."
+            )
         self.raw_bytes = raw_bytes
         self.sha256 = calculate_sha256(raw_bytes)
-        self.msg: Message = email.message_from_bytes(raw_bytes)
-        self.defects = self.msg.defects
+        try:
+            self.msg: Message = email.message_from_bytes(raw_bytes)
+            self.defects = list(self.msg.defects)
+        except Exception as err:
+            self.msg = email.message_from_bytes(b"")
+            self.defects = [f"MalformedEmailPayload: {type(err).__name__}"]
 
     def get_headers(self) -> Dict[str, Any]:
         """Extract all headers into a dictionary, decoding RFC 2047 MIME words and handling duplicates."""
         headers = {}
-        for k, v in self.msg.items():
+        for count, (k, v) in enumerate(self.msg.items()):
+            if count >= MAX_HEADER_COUNT:
+                headers["x-sentinel-parser-warning"] = "Header count threshold reached; remaining headers truncated."
+                break
             k_lower = k.lower()
+            if isinstance(v, str) and len(v) > MAX_HEADER_VALUE_LEN:
+                v = v[:MAX_HEADER_VALUE_LEN]
             decoded_val = decode_mime_words(v) if isinstance(v, str) else v
             if k_lower in headers:
                 if isinstance(headers[k_lower], list):
@@ -66,35 +101,56 @@ class SecureEmailParser:
         return headers
 
     def get_body_text(self) -> str:
-        """Extract text/plain and text/html securely."""
+        """Extract text/plain and text/html securely with bounded memory allocation."""
         body = ""
+        walk_count = 0
         for part in self.msg.walk():
+            walk_count += 1
+            if walk_count > MAX_MIME_PARTS:
+                break
             if part.get_content_type() in ["text/plain", "text/html"]:
                 charset = part.get_content_charset() or "utf-8"
                 try:
                     payload = part.get_payload(decode=True)
                     if payload:
-                        body += payload.decode(charset, errors="replace") + "\n"
+                        decoded = payload.decode(charset, errors="replace")
+                        if len(body) + len(decoded) > MAX_BODY_CHARS:
+                            remaining_chars = max(0, MAX_BODY_CHARS - len(body))
+                            body += decoded[:remaining_chars] + "\n[TRUNCATED: Body size limit exceeded]\n"
+                            break
+                        body += decoded + "\n"
                 except Exception:
                     pass
         return body.strip()
 
     def get_attachments_metadata(self) -> List[Dict[str, str]]:
-        """List attachments without executing or extracting them."""
+        """List attachments without executing or extracting them, strictly bounded."""
         attachments = []
+        walk_count = 0
         for part in self.msg.walk():
+            walk_count += 1
+            if walk_count > MAX_MIME_PARTS or len(attachments) >= MAX_ATTACHMENT_COUNT:
+                break
             if part.get_content_maintype() == "multipart":
                 continue
             if part.get("Content-Disposition") is None:
                 continue
             
-            filename = part.get_filename()
-            if filename:
-                payload = part.get_payload(decode=True)
-                size = len(payload) if payload else 0
-                sha256 = calculate_sha256(payload) if payload else None
+            raw_filename = part.get_filename()
+            if raw_filename:
+                clean_filename = sanitize_attachment_filename(raw_filename)
+                try:
+                    payload = part.get_payload(decode=True)
+                except Exception:
+                    payload = b""
+                if payload and len(payload) > MAX_ATTACHMENT_SIZE_BYTES:
+                    size = len(payload)
+                    sha256 = calculate_sha256(payload[: 1024 * 1024])
+                else:
+                    size = len(payload) if payload else 0
+                    sha256 = calculate_sha256(payload) if payload else None
                 attachments.append({
-                    "filename": filename,
+                    "filename": clean_filename,
                     "content_type": part.get_content_type(),
                     "size_bytes": size,
                     "sha256": sha256
@@ -117,3 +173,4 @@ class SecureEmailParser:
         if isinstance(received, str):
             received = [received]
         return received
+

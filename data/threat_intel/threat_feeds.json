@@ -1,0 +1,80 @@
+{
+  "description": "Local threat intelligence blacklist & reputation feed database for EMAILSHIELD INDIA.",
+  "last_updated": "2026-09-18T00:00:00Z",
+  "threat_iocs": [
+    {
+      "type": "IP",
+      "value": "194.165.16.11",
+      "feed": "Abuse.ch Feodo Tracker / Botnet C2",
+      "category": "Botnet C2",
+      "first_seen": "2026-08-01",
+      "last_seen": "2026-09-15",
+      "confidence": 95,
+      "evidence": "Known Emotet / Qakbot C2 controller node active in malicious spam distribution"
+    },
+    {
+      "type": "IP",
+      "value": "45.154.255.88",
+      "feed": "Spamhaus DROP / Bulletproof Transit",
+      "category": "Bulletproof Hosting",
+      "first_seen": "2026-07-20",
+      "last_seen": "2026-09-10",
+      "confidence": 90,
+      "evidence": "Associated with bulletproof hosting provider known for unauthenticated spam relaying"
+    },
+    {
+      "type": "IP",
+      "value": "91.240.118.242",
+      "feed": "Emerging Threats / Mirai Spambot Pool",
+      "category": "Botnet Spambot",
+      "first_seen": "2026-08-15",
+      "last_seen": "2026-09-16",
+      "confidence": 90,
+      "evidence": "Involved in high-volume credential phishing campaigns and automated spam bursts"
+    },
+    {
+      "type": "Domain",
+      "value": "secure-sbi-update.xyz",
+      "feed": "Anti-Phishing Working Group (APWG) / Local Phishfeed",
+      "category": "Credential Phishing",
+      "first_seen": "2026-09-01",
+      "last_seen": "2026-09-17",
+      "confidence": 99,
+      "evidence": "Known deceptive domain mimicking State Bank of India login portal"
+    },
+    {
+      "type": "Domain",
+      "value": "paypal-account-verification-alert.top",
+      "feed": "OpenPhish Global Threat Feed",
+      "category": "Brand Impersonation",
+      "first_seen": "2026-09-05",
+      "last_seen": "2026-09-18",
+      "confidence": 99,
+      "evidence": "Active phishing landing page capturing PayPal account credentials and payment card numbers"
+    },
+    {
+      "type": "Domain",
+      "value": "incometaxindia-refund-gov.site",
+      "feed": "CERT-In Cyber Threat Advisory / Tax Scam Indicators",
+      "category": "Government Lure Phishing",
+      "first_seen": "2026-08-25",
+      "last_seen": "2026-09-16",
+      "confidence": 98,
+      "evidence": "Fake Income Tax Department refund claim portal delivering malicious APK / credential stealers"
+    }
+  ],
+  "botnet_asns": [
+    {
+      "asn": "4837",
+      "name": "China Unicom Residential Dynamic Pool",
+      "category": "Residential Spambot Pool",
+      "evidence": "Direct consumer broadband range exhibiting unauthenticated outbound port 25 spamming patterns"
+    },
+    {
+      "asn": "4134",
+      "name": "Chinanet Residential Pool",
+      "category": "Residential Spambot Pool",
+      "evidence": "Direct consumer broadband range exhibiting unauthenticated outbound port 25 spamming patterns"
+    }
+  ]
+}

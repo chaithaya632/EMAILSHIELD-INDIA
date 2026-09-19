@@ -20,5 +20,13 @@ credentials.json
 token.json
 .streamlit/secrets.toml
 data/.vault/
+data/local/**
+!data/local/.gitkeep
 *.enc
 *.zip
+*.pem
+*.key
+*.pub
+*.crt
+scratch/
+supabase/.temp/

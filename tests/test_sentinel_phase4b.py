@@ -425,18 +425,21 @@ class TestSentinelPhase4bSecurity(unittest.TestCase):
         envelope = encrypt_credential_asymmetric("password", pub, self.user_a)
         parts = envelope.split(":")
 
-        # Tampered wrapped DEK
-        tampered_wdek = parts[0] + ":" + parts[1] + ":" + ("A" + parts[2][1:]) + ":" + parts[3] + ":" + parts[4]
+        # Tampered wrapped DEK (guaranteed byte flip)
+        flip_wdek = "B" if parts[2][0] == "A" else "A"
+        tampered_wdek = parts[0] + ":" + parts[1] + ":" + (flip_wdek + parts[2][1:]) + ":" + parts[3] + ":" + parts[4]
         with self.assertRaises(DecryptionError):
             decrypt_credential_asymmetric(tampered_wdek, priv, self.user_a)
 
-        # Tampered nonce
-        tampered_nonce = parts[0] + ":" + parts[1] + ":" + parts[2] + ":" + ("A" + parts[3][1:]) + ":" + parts[4]
+        # Tampered nonce (guaranteed byte flip)
+        flip_nonce = "B" if parts[3][0] == "A" else "A"
+        tampered_nonce = parts[0] + ":" + parts[1] + ":" + parts[2] + ":" + (flip_nonce + parts[3][1:]) + ":" + parts[4]
         with self.assertRaises(DecryptionError):
             decrypt_credential_asymmetric(tampered_nonce, priv, self.user_a)
 
-        # Tampered ciphertext
-        tampered_ct = parts[0] + ":" + parts[1] + ":" + parts[2] + ":" + parts[3] + ":" + ("A" + parts[4][1:])
+        # Tampered ciphertext (guaranteed byte flip)
+        flip_ct = "B" if parts[4][0] == "A" else "A"
+        tampered_ct = parts[0] + ":" + parts[1] + ":" + parts[2] + ":" + parts[3] + ":" + (flip_ct + parts[4][1:])
         with self.assertRaises(DecryptionError):
             decrypt_credential_asymmetric(tampered_ct, priv, self.user_a)
 

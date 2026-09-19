@@ -1,3 +1,4 @@
+import os
 import socket
 import ipaddress
 import re
@@ -432,27 +433,33 @@ def analyze_url(url: str, resolve_redirects: bool = True) -> URLAnalysisResult:
     redirect_count = 0
 
     if is_shortener or resolve_redirects:
-        try:
-            final_destination, redirect_count, hops_history = safe_unshorten_url(url, timeout=3.5)
-            if redirect_count > 0:
-                reasons.append(f"Redirect chain detected: Passed through {redirect_count} hops to '{defang_url(final_destination)}'")
-                suspicious_indicators.append(f"HTTP Redirects ({redirect_count} hops)")
-        except SSRFBlockedError as e:
-            if e.destination_url:
-                final_destination = e.destination_url
-                redirect_count = e.redirect_count
-            if redirect_count > 0:
-                reasons.append(f"Redirect chain detected: Passed through {redirect_count} hops to '{defang_url(final_destination)}'")
-                suspicious_indicators.append(f"HTTP Redirects ({redirect_count} hops)")
-            reasons.append(f"SSRF Protection: Outbound probe blocked to restricted/private destination: {e}")
-            suspicious_indicators.append("Restricted/Internal Network Destination (SSRF Blocked)")
+        allow_probes = os.environ.get("SENTINEL_ALLOW_OUTBOUND_URL_PROBES", "1").lower() in ("1", "true")
+        if allow_probes:
+            try:
+                final_destination, redirect_count, hops_history = safe_unshorten_url(url, timeout=3.5)
+                if redirect_count > 0:
+                    reasons.append(f"Redirect chain detected: Passed through {redirect_count} hops to '{defang_url(final_destination)}'")
+                    suspicious_indicators.append(f"HTTP Redirects ({redirect_count} hops)")
+            except SSRFBlockedError as e:
+                if e.destination_url:
+                    final_destination = e.destination_url
+                    redirect_count = e.redirect_count
+                if redirect_count > 0:
+                    reasons.append(f"Redirect chain detected: Passed through {redirect_count} hops to '{defang_url(final_destination)}'")
+                    suspicious_indicators.append(f"HTTP Redirects ({redirect_count} hops)")
+                reasons.append(f"SSRF Protection: Outbound probe blocked to restricted/private destination: {e}")
+                suspicious_indicators.append("Restricted/Internal Network Destination (SSRF Blocked)")
+                if is_shortener:
+                    reasons.append("URL shortener redirected to a restricted internal address.")
+                    suspicious_indicators.append("Obfuscated URL Shortener")
+            except Exception:
+                # Network blocked, expired domain, or server rejected probe
+                if is_shortener:
+                    reasons.append("URL shortener used; remote destination could not be safely unshortened.")
+                    suspicious_indicators.append("Obfuscated URL Shortener")
+        else:
             if is_shortener:
-                reasons.append("URL shortener redirected to a restricted internal address.")
-                suspicious_indicators.append("Obfuscated URL Shortener")
-        except Exception:
-            # Network blocked, expired domain, or server rejected probe
-            if is_shortener:
-                reasons.append("URL shortener used; remote destination could not be safely unshortened.")
+                reasons.append("URL shortener detected (live outbound probe disabled for zero-trust public security).")
                 suspicious_indicators.append("Obfuscated URL Shortener")
 
     # Update parsed parts to final destination if redirected

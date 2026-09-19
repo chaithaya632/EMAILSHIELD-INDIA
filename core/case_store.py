@@ -12,6 +12,8 @@ import io
 import datetime
 import uuid
 import re
+from typing import Dict, Any, Optional, List, Tuple
+from core.supabase_client import is_supabase_configured
 
 DB_PATH = os.path.join("data", "cases", "cases.db")
 
@@ -77,6 +79,15 @@ def filter_raw_json_allowlist(case_data: Dict[str, Any]) -> Dict[str, Any]:
     clean_report["relay_transit"] = case_data.get("relay_transit", {})
     clean_report["sender_location"] = case_data.get("sender_location", {})
     clean_report["geolocation"] = case_data.get("geolocation", [])
+
+    # Infrastructure & Threat Intelligence Telemetry
+    infra_raw = case_data.get("infrastructure_intel")
+    if hasattr(infra_raw, "model_dump"):
+        clean_report["infrastructure_intel"] = infra_raw.model_dump()
+    elif isinstance(infra_raw, dict):
+        clean_report["infrastructure_intel"] = infra_raw
+    else:
+        clean_report["infrastructure_intel"] = {}
 
     # Attachment Metadata (Sanitized - SHA256, filename, verdict - NO binary contents)
     clean_atts = []
@@ -268,6 +279,9 @@ def save_case(case_data: Dict[str, Any], user_id: Optional[str] = None, client: 
             return False
 
     # Development / Offline Test Fallback Mode
+    if is_supabase_configured() and (not client or not user_id):
+        return False
+
     if client and user_id:
         try:
             case_row = {
@@ -307,9 +321,13 @@ def save_case(case_data: Dict[str, Any], user_id: Optional[str] = None, client: 
                     client.table("indicators").insert(ind_rows).execute()
             return True
         except Exception:
+            if is_supabase_configured():
+                return False
             _save_case_sqlite(case_data)
             return False
     else:
+        if is_supabase_configured():
+            return False
         _save_case_sqlite(case_data)
         return True
 
@@ -330,11 +348,11 @@ def get_case_record(case_id: str, client: Any = None) -> Optional[Dict[str, Any]
                 return data
             return None
         except Exception:
-            if is_public_multiuser_mode():
+            if is_public_multiuser_mode() or is_supabase_configured():
                 return None
 
-    if is_public_multiuser_mode():
-        # Public multi-user mode: do not query shared local SQLite
+    if is_public_multiuser_mode() or (is_supabase_configured() and client is None):
+        # Fail closed: do not query shared local SQLite without authenticated client
         return None
 
     _init_sqlite_db()
@@ -353,11 +371,15 @@ def get_case_record(case_id: str, client: Any = None) -> Optional[Dict[str, Any]
     return None
 
 
-def get_all_cases(client: Any = None) -> List[Dict[str, Any]]:
-    """Retrieve historical cases (RLS-filtered to current user when client is provided)."""
+def get_all_cases(client: Any = None, limit: int = 100) -> List[Dict[str, Any]]:
+    """Retrieve historical cases with bounded memory allocation (RLS-filtered when client provided)."""
+    effective_limit = max(1, min(limit or 100, 500))
     if client:
         try:
-            res = client.table("cases").select("*").order("created_at", desc=True).execute()
+            query = client.table("cases").select("*").order("created_at", desc=True)
+            if hasattr(query, "limit"):
+                query = query.limit(effective_limit)
+            res = query.execute()
             results = []
             for row in (res.data or []):
                 d = row.get("raw_json", {})
@@ -369,16 +391,17 @@ def get_all_cases(client: Any = None) -> List[Dict[str, Any]]:
                 results.append(d)
             return results
         except Exception:
-            if is_public_multiuser_mode():
+            if is_public_multiuser_mode() or is_supabase_configured():
                 return []
 
-    if is_public_multiuser_mode():
+    if is_public_multiuser_mode() or (is_supabase_configured() and client is None):
+        # Fail closed: do not query shared local SQLite without authenticated client
         return []
 
     _init_sqlite_db()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('SELECT case_id, timestamp, sha256, risk_score, status, assigned_investigator, analyst_notes, case_severity, raw_json FROM cases ORDER BY timestamp DESC')
+    cursor.execute('SELECT case_id, timestamp, sha256, risk_score, status, assigned_investigator, analyst_notes, case_severity, raw_json FROM cases ORDER BY timestamp DESC LIMIT ?', (effective_limit,))
     rows = cursor.fetchall()
     conn.close()
 
@@ -396,29 +419,33 @@ def get_all_cases(client: Any = None) -> List[Dict[str, Any]]:
     return results
 
 
-def get_all_indicators(client: Any = None, case_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Retrieve threat indicators (RLS-filtered to current user when client is provided)."""
+def get_all_indicators(client: Any = None, case_id: Optional[str] = None, limit: int = 500) -> List[Dict[str, Any]]:
+    """Retrieve threat indicators with bounded query allocation."""
+    effective_limit = max(1, min(limit or 500, 2000))
     if client:
         try:
             query = client.table("indicators").select("case_id, type, value, source")
+            if hasattr(query, "limit"):
+                query = query.limit(effective_limit)
             if case_id:
                 query = query.eq("case_id", case_id)
             res = query.execute()
             return [{"case_id": r.get("case_id"), "type": r.get("type"), "value": r.get("value")} for r in (res.data or [])]
         except Exception:
-            if is_public_multiuser_mode():
+            if is_public_multiuser_mode() or is_supabase_configured():
                 return []
 
-    if is_public_multiuser_mode():
+    if is_public_multiuser_mode() or (is_supabase_configured() and client is None):
+        # Fail closed: do not query shared local SQLite without authenticated client
         return []
 
     _init_sqlite_db()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     if case_id:
-        cursor.execute('SELECT case_id, type, value FROM indicators WHERE case_id = ?', (case_id,))
+        cursor.execute('SELECT case_id, type, value FROM indicators WHERE case_id = ? LIMIT ?', (case_id, effective_limit))
     else:
-        cursor.execute('SELECT case_id, type, value FROM indicators')
+        cursor.execute('SELECT case_id, type, value FROM indicators LIMIT ?', (effective_limit,))
     rows = cursor.fetchall()
     conn.close()
     return [{"case_id": r[0], "type": r[1], "value": r[2]} for r in rows]
@@ -439,13 +466,15 @@ def update_case_metadata(case_id: str, status: str = None, investigator: str = N
                 updates["case_severity"] = severity
             if updates:
                 updates["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                client.table("cases").update(updates).or_(f"id.eq.{case_id},case_number.eq.{case_id}").execute()
+                res = client.table("cases").update(updates).or_(f"id.eq.{case_id},case_number.eq.{case_id}").execute()
+                if res and hasattr(res, "data") and isinstance(res.data, list):
+                    return len(res.data) > 0
             return True
         except Exception:
-            if is_public_multiuser_mode():
+            if is_public_multiuser_mode() or is_supabase_configured():
                 return False
 
-    if is_public_multiuser_mode():
+    if is_public_multiuser_mode() or (is_supabase_configured() and client is None):
         return False
 
     _init_sqlite_db()
@@ -475,8 +504,18 @@ def update_case_metadata(case_id: str, status: str = None, investigator: str = N
     return True
 
 
+def sanitize_csv_cell(val: Any) -> Any:
+    """Neutralize spreadsheet formula injection characters (=, +, -, @, tab, cr)."""
+    if val is None:
+        return ""
+    s = str(val)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return f"'{s}"
+    return s
+
+
 def export_case_iocs_csv(case_id: Optional[str] = None, client: Any = None) -> str:
-    """Generate a CSV string of IOCs for SIEM/Firewall ingestion."""
+    """Generate a CSV string of IOCs for SIEM/Firewall ingestion, protected against CSV injection."""
     rows = get_all_indicators(client=client, case_id=case_id)
 
     output = io.StringIO()
@@ -485,7 +524,13 @@ def export_case_iocs_csv(case_id: Optional[str] = None, client: Any = None) -> s
 
     ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
     for r in rows:
-        writer.writerow([r.get("type"), r.get("value"), r.get("case_id"), "EMAILSHIELD INDIA", ts])
+        writer.writerow([
+            sanitize_csv_cell(r.get("type")),
+            sanitize_csv_cell(r.get("value")),
+            sanitize_csv_cell(r.get("case_id")),
+            "EMAILSHIELD INDIA",
+            ts
+        ])
 
     return output.getvalue()
 
@@ -506,8 +551,460 @@ def export_case_iocs_json(case_id: Optional[str] = None, client: Any = None) -> 
     export_obj = {
         "version": "1.0",
         "system": "EMAILSHIELD INDIA Forensic Intelligence",
-        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "ioc_count": len(iocs),
         "indicators": iocs
     }
     return json.dumps(export_obj, indent=2)
+
+
+def export_case_report_pdf(case_id: str, client: Any = None, user_id: Optional[str] = None) -> Optional[bytes]:
+    """
+    Secure backend export for Case PDF report with strict authorization and RLS checks.
+    Fails closed (returns None) if unauthenticated, wrong tenant, or RLS blocked.
+    """
+    if not case_id:
+        return None
+    case_rec = get_case_record(case_id, client=client)
+    if not case_rec:
+        return None
+    if not is_authorized_caller(user_id=user_id, client=client, resource_owner_id=case_rec.get("user_id")):
+        return None
+    from core.report import generate_pdf_report
+    pdf_buf = io.BytesIO()
+    generate_pdf_report(case_rec, pdf_buf)
+    return pdf_buf.getvalue()
+
+
+def export_case_report_json(case_id: str, client: Any = None, user_id: Optional[str] = None) -> Optional[str]:
+    """
+    Secure backend export for Case JSON report with strict authorization and RLS checks.
+    Fails closed (returns None) if unauthenticated, wrong tenant, or RLS blocked.
+    """
+    if not case_id:
+        return None
+    case_rec = get_case_record(case_id, client=client)
+    if not case_rec:
+        return None
+    if not is_authorized_caller(user_id=user_id, client=client, resource_owner_id=case_rec.get("user_id")):
+        return None
+    from core.report import generate_json_report
+    return generate_json_report(case_rec)
+
+
+def export_case_ncrp_pdf(case_id: str, client: Any = None, user_id: Optional[str] = None) -> Optional[bytes]:
+    """
+    Secure backend export for Indian NCRP / BSA Section 63 Annexure PDF.
+    Fails closed (returns None) if unauthenticated, wrong tenant, or RLS blocked.
+    """
+    if not case_id:
+        return None
+    case_rec = get_case_record(case_id, client=client)
+    if not case_rec:
+        return None
+    if not is_authorized_caller(user_id=user_id, client=client, resource_owner_id=case_rec.get("user_id")):
+        return None
+    from core.ncrp_packager import generate_ncrp_pdf_annexure
+    pdf_buf = io.BytesIO()
+    generate_ncrp_pdf_annexure(case_rec, pdf_buf)
+    return pdf_buf.getvalue()
+
+
+def export_case_bsa_pdf(case_id: str, client: Any = None, user_id: Optional[str] = None) -> Optional[bytes]:
+    """Alias for BSA Section 63 Annexure PDF export."""
+    return export_case_ncrp_pdf(case_id, client=client, user_id=user_id)
+
+
+def export_case_executive_pdf(case_id: str, client: Any = None, user_id: Optional[str] = None) -> Optional[bytes]:
+    """
+    Secure backend export for Case Executive Summary PDF report with strict authorization checks.
+    Fails closed (returns None) if unauthenticated, wrong tenant, or RLS blocked.
+    """
+    if not case_id:
+        return None
+    case_rec = get_case_record(case_id, client=client)
+    if not case_rec:
+        return None
+    if not is_authorized_caller(user_id=user_id, client=client, resource_owner_id=case_rec.get("user_id")):
+        return None
+    from core.report import generate_executive_pdf_report
+    pdf_buf = io.BytesIO()
+    generate_executive_pdf_report(case_rec, pdf_buf)
+    return pdf_buf.getvalue()
+
+
+def export_case_evidence_manifest(case_id: str, client: Any = None, user_id: Optional[str] = None) -> Optional[str]:
+    """
+    Secure backend export for Evidence Manifest JSON with strict authorization checks.
+    Fails closed (returns None) if unauthenticated, wrong tenant, or RLS blocked.
+    """
+    if not case_id:
+        return None
+    case_rec = get_case_record(case_id, client=client)
+    if not case_rec:
+        return None
+    if not is_authorized_caller(user_id=user_id, client=client, resource_owner_id=case_rec.get("user_id")):
+        return None
+    from core.evidence import build_evidence_manifest, scan_and_redact_secrets
+    manifest = build_evidence_manifest(case_rec, client=client)
+    manifest_data = {
+        "case_id": case_id,
+        "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "item_count": len(manifest),
+        "evidence_manifest": manifest,
+    }
+    return json.dumps(scan_and_redact_secrets(manifest_data), indent=2)
+
+
+def export_case_zip_package(
+    case_id: str,
+    client: Any = None,
+    user_id: Optional[str] = None,
+    raw_eml_bytes: Optional[bytes] = None
+) -> Optional[bytes]:
+    """
+    Secure backend export for complete Investigation Evidence ZIP Package with strict authorization checks.
+    Fails closed (returns None) if unauthenticated, wrong tenant, or RLS blocked.
+    """
+    if not case_id:
+        return None
+    case_rec = get_case_record(case_id, client=client)
+    if not case_rec:
+        return None
+    if not is_authorized_caller(user_id=user_id, client=client, resource_owner_id=case_rec.get("user_id")):
+        return None
+    from core.evidence import build_investigation_zip_package
+    return build_investigation_zip_package(
+        case_id=case_id,
+        case_data=case_rec,
+        client=client,
+        user_id=user_id,
+        raw_eml_bytes=raw_eml_bytes,
+    )
+
+
+# =====================================================================
+# 4. SOC DASHBOARD METRICS & MULTI-TENANT QUERY HELPERS
+# =====================================================================
+
+def _extract_primary_ioc(case_data: Dict[str, Any]) -> str:
+    """Extract primary IOC indicator or origin domain for display in SOC views."""
+    # 1. Check indicators in case_data
+    indicators = case_data.get("indicators", [])
+    if isinstance(indicators, list):
+        for ind in indicators:
+            itype = ind.get("type", "") if isinstance(ind, dict) else getattr(ind, "type", "")
+            ival = ind.get("value", "") if isinstance(ind, dict) else getattr(ind, "value", "")
+            if itype.lower() in ("url", "domain", "ip", "ipv4") and ival:
+                return str(ival)[:40]
+    
+    # 2. Check rule findings for specific indicators
+    rule_findings = case_data.get("rule_findings", [])
+    if isinstance(rule_findings, list):
+        for rf in rule_findings:
+            if isinstance(rf, dict) and rf.get("evidence"):
+                ev = str(rf.get("evidence"))
+                if "http" in ev or ".com" in ev or ".in" in ev:
+                    return ev[:40]
+
+    # 3. Fallback to sender domain or sender address
+    sender = case_data.get("sender", "")
+    if "@" in sender:
+        return sender.split("@")[-1].strip(">").strip()
+    return "N/A"
+
+
+def is_authorized_caller(
+    user_id: Optional[str] = None,
+    client: Any = None,
+    resource_owner_id: Optional[str] = None
+) -> bool:
+    """
+    Consolidated authorization & access-control evaluator for EMAILSHIELD INDIA.
+    Enforces the single-pass authorization chain:
+    REQUEST -> AUTHENTICATION -> USER ID -> TENANT -> RESOURCE OWNERSHIP -> RLS -> AUTHORIZED DATA
+
+    Fail-closed security guarantees:
+    1. If neither user_id nor client is provided -> DENIED (Fail closed).
+    2. When Supabase is configured or in public multi-user mode:
+       - Requires both authenticated client and valid user_id.
+       - If resource_owner_id is specified, user_id must match resource_owner_id.
+    3. In local offline developer sandbox (Supabase unconfigured & not multi-user):
+       - Requires user_id or client.
+       - If resource_owner_id is specified, user_id must match resource_owner_id.
+    """
+    if not user_id and not client:
+        return False
+
+    try:
+        supabase_active = is_supabase_configured()
+    except Exception:
+        supabase_active = False
+
+    if is_public_multiuser_mode() or supabase_active:
+        if not (client and user_id):
+            return False
+    else:
+        if not (user_id or client):
+            return False
+
+    # Ownership / Tenant check (if resource owner specified)
+    if resource_owner_id is not None:
+        eff_user = user_id or getattr(client, "user_id", None)
+        if eff_user != resource_owner_id:
+            return False
+
+    return True
+
+
+# Backward-compatibility alias
+is_authenticated_soc_caller = is_authorized_caller
+
+
+def derive_case_classification(case_data: Dict[str, Any]) -> str:
+    """
+    Authoritative classification derivation for forensic investigations.
+    Returns strictly one of: 'THREAT', 'SUSPICIOUS', 'CLEAN'.
+    
+    Rules:
+    - 'THREAT': Confirmed malicious intent (Phishing, Malware, BEC, Impersonation, Credential Harvesting, Extortion, Quishing, Fraud).
+    - 'SUSPICIOUS': Anomalous, unverified, or high-scrutiny solicitation without confirmed threat payloads.
+    - 'CLEAN': Legitimate, benign, transactional, newsletter, or verified safe communications.
+    
+    Heuristic rule triggers or raw risk scores alone NEVER elevate a record to THREAT.
+    """
+    # 1. Direct explicit classification field
+    explicit_cls = str(case_data.get("classification") or "").strip().upper()
+    if explicit_cls in ("THREAT", "MALICIOUS", "PHISHING"):
+        return "THREAT"
+    if explicit_cls in ("SUSPICIOUS", "SUSPICIOUS FINANCIAL", "MEDIUM"):
+        return "SUSPICIOUS"
+    if explicit_cls in ("CLEAN", "BENIGN", "SAFE", "LEGITIMATE"):
+        return "CLEAN"
+
+    # 2. Threat verdict analysis
+    verdict = str(case_data.get("threat_verdict") or case_data.get("verdict") or "").strip()
+    verdict_upper = verdict.upper()
+
+    if verdict_upper:
+        # Check clean / legitimate verdicts first to avoid false positives
+        clean_indicators = (
+            "LEGITIMATE", "CLEAN", "BENIGN", "SAFE",
+            "SECURITY ALERT / NOTIFICATION (AUTHENTICATED)", "NO THREAT", "UNCLASSIFIED / SAFE"
+        )
+        if any(ind in verdict_upper for ind in clean_indicators):
+            return "CLEAN"
+
+        # Check threat verdicts
+        threat_indicators = (
+            "PHISH", "QUISH", "MALICIOUS", "MALWARE", "BEC", "BUSINESS EMAIL COMPROMISE",
+            "EXECUTIVE IMPERSONATION", "BRAND / SERVICE IMPERSONATION", "CREDENTIAL HARVESTING",
+            "EXTORTION", "BLACKMAIL", "FRAUD", "TROJAN", "RANSOMWARE",
+            "SPOOFING / FORGERY DETECTED", "THREAT"
+        )
+        if any(ind in verdict_upper for ind in threat_indicators):
+            return "THREAT"
+
+        # Check suspicious verdicts
+        if "SUSPICIOUS" in verdict_upper:
+            return "SUSPICIOUS"
+
+    # 3. Explicit boolean threat detection flags
+    if case_data.get("threat_detected") is True or case_data.get("is_threat") is True:
+        return "THREAT"
+
+    # 4. Fallback when verdict is absent / None / unclassified
+    # Notice: Raw risk_score or rules triggered do NOT qualify as THREAT per specification.
+    raw_risk = str(case_data.get("risk_score") or "").strip().upper()
+    if raw_risk in ("HIGH", "SUSPICIOUS"):
+        return "SUSPICIOUS"
+
+    return "CLEAN"
+
+
+def derive_case_severity(case_data: Dict[str, Any]) -> str:
+    """Extract and normalize case severity level into standard uppercase enum."""
+    sev = str(case_data.get("case_severity") or case_data.get("severity") or "MEDIUM").strip().upper()
+    if "CRIT" in sev:
+        return "CRITICAL"
+    if "HIGH" in sev:
+        return "HIGH"
+    if "LOW" in sev or "INFO" in sev:
+        return "LOW"
+    return "MEDIUM"
+
+
+def get_soc_kpi_metrics(user_id: Optional[str] = None, client: Any = None) -> Dict[str, int]:
+    """
+    Retrieve real tenant-scoped KPI metrics for the SOC Operations Dashboard:
+    - emails_analysed: Total authorized forensic cases evaluated for this tenant.
+    - threats_detected: Cases where final classification is strictly THREAT.
+    - high_critical: Cases where final classification == THREAT and severity in ('HIGH', 'CRITICAL').
+    - open_investigations: Cases with active open lifecycle status (OPEN, IN_PROGRESS, ACTIVE, NEW).
+    
+    Strict Tenant Isolation & Authorization:
+    - Fails closed with all zero metrics if unauthenticated.
+    """
+    if not is_authenticated_soc_caller(user_id, client):
+        return {
+            "emails_analysed": 0,
+            "threats_detected": 0,
+            "high_critical": 0,
+            "open_investigations": 0,
+            "status": "unauthorized",
+            "authenticated": False
+        }
+
+    cases = get_all_cases(client=client, limit=500)
+    
+    total = len(cases)
+    threats = 0
+    high_crit = 0
+    open_inv = 0
+
+    for c in cases:
+        cls = derive_case_classification(c)
+        sev = derive_case_severity(c)
+        status = str(c.get("status") or "Open").strip().upper()
+
+        if cls == "THREAT":
+            threats += 1
+            if sev in ("HIGH", "CRITICAL"):
+                high_crit += 1
+
+        if status in ("OPEN", "IN_PROGRESS", "IN PROGRESS", "ACTIVE", "NEW", "INVESTIGATING"):
+            open_inv += 1
+
+    return {
+        "emails_analysed": total,
+        "threats_detected": threats,
+        "high_critical": high_crit,
+        "open_investigations": open_inv,
+        "status": "authorized",
+        "authenticated": True
+    }
+
+
+def get_soc_threat_distribution(user_id: Optional[str] = None, client: Any = None) -> Dict[str, int]:
+    """
+    Retrieve threat distribution breakdown for the SOC Operations Dashboard:
+    - Clean: Legitimate / Benign / Safe cases
+    - Suspicious: Suspicious solicitation / Medium-risk cases
+    - High: High severity threats (THREAT + HIGH)
+    - Critical: Critical severity active campaigns (THREAT + CRITICAL)
+    
+    Strict Tenant Isolation & Authorization:
+    - Fails closed with all zeros if unauthenticated.
+    """
+    dist = {"Clean": 0, "Suspicious": 0, "High": 0, "Critical": 0}
+    if not is_authenticated_soc_caller(user_id, client):
+        return dist
+
+    cases = get_all_cases(client=client, limit=500)
+    for c in cases:
+        cls = derive_case_classification(c)
+        sev = derive_case_severity(c)
+
+        if cls == "THREAT":
+            if sev == "CRITICAL":
+                dist["Critical"] += 1
+            elif sev == "HIGH":
+                dist["High"] += 1
+            else:
+                dist["Suspicious"] += 1
+        elif cls == "SUSPICIOUS":
+            dist["Suspicious"] += 1
+        else:
+            dist["Clean"] += 1
+
+    return dist
+
+
+def get_soc_threat_activity(user_id: Optional[str] = None, client: Any = None, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Retrieve recent threat events for the tenant, with sensitive tokens masked.
+    Strictly tenant-scoped via RLS. Fails closed if unauthenticated.
+    """
+    if not is_authenticated_soc_caller(user_id, client):
+        return []
+
+    effective_limit = max(1, min(limit or 10, 50))
+    cases = get_all_cases(client=client, limit=effective_limit * 2)
+
+    activity = []
+    for c in cases:
+        raw_subject = c.get("subject", "No Subject")
+        masked_subject = _mask_sensitive_tokens(raw_subject)
+        
+        primary_ioc = _extract_primary_ioc(c)
+        cls = derive_case_classification(c)
+        sev = derive_case_severity(c)
+
+        activity.append({
+            "case_id": c.get("case_id") or c.get("case_number", "N/A"),
+            "timestamp": str(c.get("timestamp", ""))[:19],
+            "sender": c.get("sender", "Unknown"),
+            "subject": masked_subject,
+            "risk_score": cls,
+            "case_severity": sev,
+            "status": c.get("status", "Open"),
+            "primary_ioc": primary_ioc
+        })
+        if len(activity) >= effective_limit:
+            break
+
+    return activity
+
+
+def get_soc_investigation_queue(user_id: Optional[str] = None, client: Any = None, limit: int = 15) -> List[Dict[str, Any]]:
+    """
+    Retrieve active/open investigations prioritised by severity:
+    CRITICAL (0) > HIGH (1) > MEDIUM / SUSPICIOUS (2) > LOW / CLEAN (3).
+    Enforces strict RLS tenant isolation. Fails closed if unauthenticated.
+    """
+    if not is_authenticated_soc_caller(user_id, client):
+        return []
+
+    effective_limit = max(1, min(limit or 15, 100))
+    cases = get_all_cases(client=client, limit=effective_limit * 3)
+
+    severity_weight = {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 2,
+        "SUSPICIOUS": 2,
+        "LOW": 3,
+        "CLEAN": 4
+    }
+
+    queue = []
+    for c in cases:
+        raw_subj = c.get("subject", "No Subject")
+        masked_subj = _mask_sensitive_tokens(raw_subj)
+        sev = derive_case_severity(c)
+        cls = derive_case_classification(c)
+        status = str(c.get("status") or "Open")
+        primary_ioc = _extract_primary_ioc(c)
+
+        # Prioritise open and active investigations
+        is_open = status.strip().upper() in ("OPEN", "IN_PROGRESS", "IN PROGRESS", "ACTIVE", "NEW", "INVESTIGATING")
+
+        queue.append({
+            "case_id": c.get("case_id") or c.get("case_number", "N/A"),
+            "timestamp": str(c.get("timestamp", ""))[:19],
+            "sender": c.get("sender", "Unknown"),
+            "subject": masked_subj,
+            "severity": sev,
+            "risk_score": cls,
+            "status": status,
+            "assigned_investigator": c.get("assigned_investigator", "Unassigned"),
+            "primary_ioc": primary_ioc,
+            "_sort_key": (0 if is_open else 1, severity_weight.get(sev, 2))
+        })
+
+    queue.sort(key=lambda x: x["_sort_key"])
+    for item in queue:
+        del item["_sort_key"]
+
+    return queue[:effective_limit]
+

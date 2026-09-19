@@ -257,6 +257,9 @@ def generate_worker_asymmetric_keypair(key_size: int = DEFAULT_RSA_KEY_SIZE) -> 
     return private_key, private_key.public_key()
 
 
+generate_rsa_keypair = generate_worker_asymmetric_keypair
+
+
 def export_public_key_pem(public_key: rsa.RSAPublicKey) -> str:
     """Exports an RSA public key to standard PEM format (SubjectPublicKeyInfo)."""
     if not isinstance(public_key, rsa.RSAPublicKey):
@@ -306,10 +309,23 @@ def load_private_key_from_pem(pem_str: str) -> rsa.RSAPrivateKey:
 
 def load_public_key_from_env(env_var: str = "SENTINEL_WORKER_PUBLIC_KEY") -> rsa.RSAPublicKey:
     """
-    Retrieves and parses the worker public key from environment variables.
+    Retrieves and parses the worker public key from environment variables,
+    Streamlit secrets, or local configuration.
     Used in Edge Function / provisioning context. Fails closed.
     """
     val = os.environ.get(env_var)
+    if not val:
+        try:
+            import streamlit as st
+            val = st.secrets.get(env_var)
+        except Exception:
+            pass
+    if not val:
+        try:
+            from worker.imap_client import _lookup_local_env_var
+            val = _lookup_local_env_var(env_var)
+        except Exception:
+            pass
     if not val:
         raise KeyNotFoundError(f"Worker public key environment variable '{env_var}' is not set or empty.")
     return load_public_key_from_pem(val)
@@ -492,14 +508,16 @@ class WorkerKeyRing:
     - Decryption selects the exact private key matching the envelope's key_version.
     - Unknown key versions fail closed with UnknownKeyVersionError.
     """
-    def __init__(self, active_version: str, keys: Optional[dict] = None):
+    def __init__(self, active_version: Optional[str] = None, keys: Optional[dict] = None):
         self._keys: dict = {}
         if keys:
             for k, v in keys.items():
                 self.register_key(k, v)
+        if active_version is None and keys:
+            active_version = next(iter(keys.keys()))
         if keys and active_version not in self._keys:
             raise KeyRotationError(f"Active key version '{active_version}' not found in provided keys.")
-        self._active_version = active_version
+        self._active_version = active_version or DEFAULT_KEY_VERSION
 
     @property
     def active_version(self) -> str:
@@ -562,14 +580,16 @@ class ProvisioningKeyRing:
     - Encrypts using designated active public key version.
     - Can inspect public keys by version.
     """
-    def __init__(self, active_version: str, keys: Optional[dict] = None):
+    def __init__(self, active_version: Optional[str] = None, keys: Optional[dict] = None):
         self._keys: dict = {}
         if keys:
             for k, v in keys.items():
                 self.register_key(k, v)
+        if active_version is None and keys:
+            active_version = next(iter(keys.keys()))
         if keys and active_version not in self._keys:
             raise KeyRotationError(f"Active key version '{active_version}' not found in provided keys.")
-        self._active_version = active_version
+        self._active_version = active_version or DEFAULT_KEY_VERSION
 
     @property
     def active_version(self) -> str:
@@ -598,6 +618,10 @@ class ProvisioningKeyRing:
 
     def list_versions(self) -> list:
         return list(self._keys.keys())
+
+    def get_public_key(self, version_id: Optional[str] = None) -> rsa.RSAPublicKey:
+        target_version = version_id if version_id else self._active_version
+        return self.get_key(target_version)
 
     def encrypt(
         self,

@@ -38,6 +38,9 @@ class MLAssessment(BaseModel):
     probability: float
     assessment: str
     features_used: List[str]
+    confidence_level: Optional[str] = "HIGH CONFIDENCE"
+    confidence_score: Optional[float] = 0.0
+    is_borderline: Optional[bool] = False
 
 class EventTimeline(BaseModel):
     timestamp: Optional[datetime]
@@ -171,6 +174,7 @@ class CaseReport(BaseModel):
     timeline: List[EventTimeline] = []
     
     sender_location: Optional[Dict[str, Any]] = None
+    infrastructure_intel: Optional[Any] = None
     risk_score: str = "UNKNOWN"
     risk_reasons: List[str] = []
 

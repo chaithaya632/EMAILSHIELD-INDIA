@@ -1,15 +1,39 @@
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.env
-.venv
-venv/
-env/
+# .dockerignore for EMAILSHIELD Sentinel External Worker
+# Strictly blocks secret files, git history, tests, and UI application code from container image.
+
 .git
 .gitignore
-data/.vault/
-*.enc
-credentials.json
-token.json
-.streamlit/secrets.toml
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.pub
+*.crt
+
+# Ignore application UI and control plane (worker is external and isolated)
+app/
+streamlit_app.py
+.streamlit/
+
+# Ignore tests, benchmarks, samples
+tests/
+samples/
+data/
+
+# Ignore local scratch, caches, and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.venv/
+env/
+venv/
+.gemini/
+scratch/
+*.log

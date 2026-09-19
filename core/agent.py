@@ -11,6 +11,7 @@ from core.attachments import analyze_all_attachments
 from core.lookalike import detect_lookalike_domain
 from core.bec_detector import detect_bec_and_impersonation
 from core.relay_tracer import analyze_relay_transit
+from core.infrastructure_intel import assess_infrastructure
 
 class AutonomousForensicAgent:
     """
@@ -38,6 +39,12 @@ class AutonomousForensicAgent:
         sender = str(headers.get("from", "Unknown"))
         public_ips = raw_iocs.get("ipv4", [])
         received_chain = parsed_email.get("received_chain", [])
+
+        # Execute Authoritative Normalization Pipeline
+        from core.normalization import normalize_email_payload
+        norm_data = normalize_email_payload(subject, body)
+        norm_subject = norm_data["normalized_subject"]
+        norm_body = norm_data["normalized_body"]
 
         steps: List[AgentStep] = []
         step_idx = 1
@@ -205,11 +212,12 @@ class AutonomousForensicAgent:
         )
         action_7 = f"call_tool: ScikitLearn_NLP_Classifier(tokens={len(body.split())} words)"
         
-        ml_pred = self.ml_classifier.predict(subject, body)
+        ml_pred = self.ml_classifier.predict(norm_subject, norm_body)
         prob = ml_pred.get("probability", 0.0)
         assessment = ml_pred.get("assessment", "Benign")
+        conf_level = ml_pred.get("confidence_level", "HIGH CONFIDENCE")
         obs_7 = (
-            f"Model Prediction: {assessment} (Confidence: {prob*100:.1f}%). "
+            f"Model Prediction: {assessment} (ML Score: {prob*100:.1f}%, Confidence: {conf_level}). "
             f"Features Analyzed: {len(ml_pred.get('features_used', []))} lexical n-grams."
         )
         steps.append(AgentStep(
@@ -274,13 +282,44 @@ class AutonomousForensicAgent:
         step_idx += 1
 
         # ==========================================================
-        # STEP 10: Tool - Forensic Rule Matrix & Synthesis
+        # STEP 10: Tool - Infrastructure & Threat Intelligence Correlator (SIH26106)
         # ==========================================================
         thought_10 = (
-            "I must evaluate the unified forensic rule matrix correlating domain reputation, "
-            "DMARC alignment, attachment hazards, BEC telemetry, URL intelligence, and MTA timestamps."
+            f"I must correlate network infrastructure indicators for IP '{target_ip}' and domain '{domain_rep.domain}': "
+            "inspecting VPN services, Tor exit nodes, passive open-relay transit, botnets, cloud VPS hosting, and threat feeds."
         )
-        action_10 = "call_tool: Forensic_Rule_Matrix(unified_telemetry)"
+        action_10 = f"call_tool: Infrastructure_Threat_Intel_Tool(ip='{target_ip}', domain='{domain_rep.domain}')"
+        infra_intel = assess_infrastructure(
+            ip=target_ip,
+            domain=domain_rep.domain,
+            headers=headers,
+            received_chain=received_chain,
+            geo_data=geo_result,
+            domain_rep=domain_rep,
+            auth_alignment=auth_alignment
+        )
+        obs_10 = (
+            f"Infrastructure: Cloud={infra_intel.cloud_indicator.provider} | VPN={infra_intel.vpn_indicator.status} | "
+            f"Tor={infra_intel.tor_indicator.status} | OpenRelay={infra_intel.open_relay_indicator.status} | "
+            f"Botnet={infra_intel.botnet_indicator.status} | ThreatFeed={infra_intel.threat_intel_match.status}."
+        )
+        steps.append(AgentStep(
+            step_num=step_idx,
+            thought=thought_10,
+            action=action_10,
+            observation=obs_10,
+            tool_used="Infrastructure_Threat_Intel_Tool"
+        ))
+        step_idx += 1
+
+        # ==========================================================
+        # STEP 11: Tool - Forensic Rule Matrix & Synthesis
+        # ==========================================================
+        thought_11 = (
+            "I must evaluate the unified forensic rule matrix correlating domain reputation, "
+            "DMARC alignment, attachment hazards, BEC telemetry, URL intelligence, MTA timestamps, and infrastructure intelligence."
+        )
+        action_11 = "call_tool: Forensic_Rule_Matrix(unified_telemetry)"
         
         rule_results = evaluate_rules(
             parsed_email,
@@ -290,26 +329,33 @@ class AutonomousForensicAgent:
             attachment_analyses=attachment_analyses,
             lookalike_analysis=lookalike_res,
             bec_telemetry=bec_telemetry,
-            relay_transit=relay_transit
+            relay_transit=relay_transit,
+            infrastructure_intel=infra_intel,
+            normalization_data=norm_data
         )
         rule_findings = [RuleFinding(**r) for r in rule_results]
-        risk_score, reasons = calculate_hybrid_risk(rule_results, prob, auth_alignment=auth_alignment)
+        risk_score, reasons = calculate_hybrid_risk(
+            rule_results,
+            prob,
+            auth_alignment=auth_alignment,
+            is_ml_borderline=ml_pred.get("is_borderline", False)
+        )
         
-        obs_10 = (
+        obs_11 = (
             f"Triggered {len(rule_results)} forensic rules. "
             f"Overall Hybrid Verdict: {risk_score}. "
             f"Primary findings: {'; '.join(reasons[:2])}."
         )
         steps.append(AgentStep(
             step_num=step_idx,
-            thought=thought_10,
-            action=action_10,
-            observation=obs_10,
+            thought=thought_11,
+            action=action_11,
+            observation=obs_11,
             tool_used="Forensic_Rule_Matrix"
         ))
 
         # ==========================================================
-        # STEP 11: Final Synthesis & Reasoning Briefing
+        # STEP 12: Final Synthesis & Reasoning Briefing
         # ==========================================================
         briefing = generate_forensic_reasoning(
             subject=subject,
@@ -327,6 +373,7 @@ class AutonomousForensicAgent:
             "reasons": reasons,
             "rule_findings": rule_findings,
             "ml_pred": ml_pred,
+            "normalization_data": norm_data,
             "domain_rep": domain_rep,
             "url_analyses": url_analyses,
             "auth_alignment": auth_alignment,
@@ -335,6 +382,7 @@ class AutonomousForensicAgent:
             "bec_telemetry": bec_telemetry,
             "relay_transit": relay_transit,
             "geo_result": geo_result,
+            "infrastructure_intel": infra_intel,
             "agent_steps": steps,
             "briefing": briefing
         }

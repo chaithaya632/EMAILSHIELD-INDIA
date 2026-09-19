@@ -15,19 +15,33 @@ from core.url_forensics import analyze_all_urls
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif')
 IMAGE_MIMES = ('image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/bmp')
 
+# Operational Security Bounds against Decompression Bombs & Memory Exhaustion
+MAX_IMAGE_BYTES = 5 * 1024 * 1024        # 5MB max image buffer
+MAX_IMAGE_DIMENSION = 4096               # Max width or height in pixels
+MAX_IMAGE_PIXELS = 16 * 1024 * 1024      # 16 Megapixels maximum decoded size
+MAX_IMAGES_PER_SCAN = 10                 # Maximum images analyzed per email
+
 
 def _decode_qr_from_bytes(image_bytes: bytes) -> List[str]:
     """
     Attempts to detect and decode one or more QR codes from raw image bytes using OpenCV.
     Applies resolution scaling and border normalization if needed.
+    Guards against decompression bombs, huge dimensions, and memory exhaustion.
     """
     if not image_bytes or len(image_bytes) < 32:
+        return []
+    if len(image_bytes) > MAX_IMAGE_BYTES:
         return []
         
     try:
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
+            return []
+
+        # Validate decoded image dimensions against decompression bombs
+        h, w = img.shape[:2]
+        if h > MAX_IMAGE_DIMENSION or w > MAX_IMAGE_DIMENSION or (h * w) > MAX_IMAGE_PIXELS:
             return []
             
         detector = cv2.QRCodeDetector()
@@ -85,8 +99,8 @@ def scan_for_quishing(attachments: List[Dict[str, Any]], html_body: str = "") ->
     """
     quishing_findings = []
     
-    # 1. Scan Attachments
-    for att in attachments:
+    # 1. Scan Attachments (Bounded to MAX_IMAGES_PER_SCAN)
+    for att in attachments[:MAX_IMAGES_PER_SCAN]:
         filename = att.get("filename", "")
         mime = att.get("declared_mime", "").lower()
         content_bytes = att.get("content_bytes") or att.get("payload")

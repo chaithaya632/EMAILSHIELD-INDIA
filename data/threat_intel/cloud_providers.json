@@ -1,0 +1,81 @@
+{
+  "providers": [
+    {
+      "name": "Amazon Web Services (AWS)",
+      "short_name": "AWS",
+      "asns": ["16509", "14618", "8987", "10124"],
+      "org_keywords": ["amazon.com", "aws", "amazon data services", "amazon technologies", "amazon datacenter"],
+      "confidence": 95
+    },
+    {
+      "name": "Microsoft Azure",
+      "short_name": "Azure",
+      "asns": ["8075", "8068", "8069", "12076"],
+      "org_keywords": ["microsoft corporation", "microsoft azure", "azure", "msft"],
+      "confidence": 95
+    },
+    {
+      "name": "Google Cloud Platform (GCP)",
+      "short_name": "GCP",
+      "asns": ["15169", "396982", "36040", "19527"],
+      "org_keywords": ["google llc", "google cloud", "google datacenter"],
+      "confidence": 95
+    },
+    {
+      "name": "Cloudflare",
+      "short_name": "Cloudflare",
+      "asns": ["13335", "132892", "395747"],
+      "org_keywords": ["cloudflare"],
+      "confidence": 95
+    },
+    {
+      "name": "DigitalOcean",
+      "short_name": "DigitalOcean",
+      "asns": ["14061"],
+      "org_keywords": ["digitalocean"],
+      "confidence": 95
+    },
+    {
+      "name": "Hetzner Online",
+      "short_name": "Hetzner",
+      "asns": ["24940", "213230"],
+      "org_keywords": ["hetzner", "hetzner online gmbh"],
+      "confidence": 95
+    },
+    {
+      "name": "Linode / Akamai Cloud",
+      "short_name": "Linode",
+      "asns": ["63949", "20940"],
+      "org_keywords": ["linode", "akamai connected cloud"],
+      "confidence": 95
+    },
+    {
+      "name": "OVHcloud",
+      "short_name": "OVH",
+      "asns": ["16276", "35540"],
+      "org_keywords": ["ovh", "ovh sas", "ovhcloud"],
+      "confidence": 95
+    },
+    {
+      "name": "Oracle Cloud Infrastructure (OCI)",
+      "short_name": "Oracle Cloud",
+      "asns": ["31898"],
+      "org_keywords": ["oracle corporation", "oracle cloud"],
+      "confidence": 95
+    },
+    {
+      "name": "Alibaba Cloud",
+      "short_name": "Alibaba Cloud",
+      "asns": ["37963", "45102"],
+      "org_keywords": ["alibaba", "alicloud", "aliyun"],
+      "confidence": 95
+    },
+    {
+      "name": "Vultr / Choopa",
+      "short_name": "Vultr",
+      "asns": ["20473"],
+      "org_keywords": ["vultr", "choopa", "the constant company"],
+      "confidence": 95
+    }
+  ]
+}

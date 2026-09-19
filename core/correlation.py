@@ -88,7 +88,14 @@ def build_correlation_graph(current_case_id: str = None, campaign_filter: str = 
         "Domain": "#a855f7",       # Purple
         "URL": "#f59e0b",          # Amber
         "Email": "#10b981",        # Emerald
-        "Hash": "#ec4899"          # Pink
+        "Hash": "#ec4899",         # Pink
+        "ASN": "#0284c7",          # Sky Blue
+        "Registrar": "#8b5cf6",    # Violet
+        "Hosting_Provider": "#059669", # Teal
+        "Cloud_Provider": "#d97706",   # Amber
+        "Threat_Feed": "#dc2626",      # Red
+        "VPN": "#10b981",              # Emerald
+        "Tor": "#e11d48"               # Rose
     }
     
     filtered_cases = set()
@@ -196,6 +203,195 @@ def build_correlation_graph(current_case_id: str = None, campaign_filter: str = 
         data=[edge_trace, node_trace],
         layout=go.Layout(
             title=dict(text=title_text, font=dict(size=15, color="#f8fafc")),
+            showlegend=False,
+            hovermode='closest',
+            margin=dict(b=20, l=10, r=10, t=50),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            height=460
+        )
+    )
+    return fig
+
+
+def build_case_infrastructure_graph(case_id: str, case_data: Dict[str, Any]) -> go.Figure:
+    """
+    Constructs an interactive NetworkX + Plotly Attack Graph for a single case,
+    linking the Case to Origin IP, ASN, Hosting/Cloud Provider, Domain, Registrar,
+    and Threat Intelligence Feeds.
+    """
+    G = nx.Graph()
+    
+    TYPE_COLORS = {
+        "Case": "#ef4444",         # Red for active case
+        "IP": "#06b6d4",           # Cyan
+        "Domain": "#a855f7",       # Purple
+        "URL": "#f59e0b",          # Amber
+        "Hash": "#ec4899",         # Pink
+        "ASN": "#0284c7",          # Sky Blue
+        "Registrar": "#8b5cf6",    # Violet
+        "Cloud_Provider": "#d97706", # Orange
+        "Threat_Feed": "#dc2626",  # Bright Red
+        "VPN": "#10b981",          # Emerald
+        "Tor": "#e11d48"           # Rose
+    }
+    
+    # Add Case Node
+    G.add_node(case_id, node_type="Case", color=TYPE_COLORS["Case"], size=24, is_current=True)
+    
+    infra = case_data.get("infrastructure_intel") or {}
+    if hasattr(infra, "model_dump"):
+        infra = infra.model_dump()
+        
+    sloc = case_data.get("sender_location") or {}
+    
+    # 1. IP and Infrastructure connections
+    ip = infra.get("origin_ip") or sloc.get("sender_ip")
+    if ip and ip not in ["Not available / Relay-masked", "127.0.0.1", "UNKNOWN"]:
+        G.add_node(ip, node_type="IP", color=TYPE_COLORS["IP"], size=16, is_current=False)
+        G.add_edge(case_id, ip)
+        
+        # ASN
+        asn = infra.get("asn") or sloc.get("asn")
+        if asn and asn not in ["None", "Unknown ASN", "UNKNOWN"]:
+            asn_label = f"ASN: {asn}"
+            G.add_node(asn_label, node_type="ASN", color=TYPE_COLORS["ASN"], size=14, is_current=False)
+            G.add_edge(ip, asn_label)
+            
+        # Cloud Provider
+        cloud = infra.get("cloud_indicator") or {}
+        if cloud.get("is_cloud_hosted") and cloud.get("provider") not in ["None / Dedicated / Residential", "UNKNOWN"]:
+            c_label = f"Cloud: {cloud.get('provider')}"
+            G.add_node(c_label, node_type="Cloud_Provider", color=TYPE_COLORS["Cloud_Provider"], size=14, is_current=False)
+            G.add_edge(ip, c_label)
+            
+        # VPN
+        vpn = infra.get("vpn_indicator") or {}
+        if vpn.get("status") == "DETECTED":
+            vpn_label = f"VPN: {vpn.get('provider') or 'Commercial VPN'}"
+            G.add_node(vpn_label, node_type="VPN", color=TYPE_COLORS["VPN"], size=14, is_current=False)
+            G.add_edge(ip, vpn_label)
+            
+        # Tor
+        tor = infra.get("tor_indicator") or {}
+        if tor.get("status") == "DETECTED":
+            tor_label = "Tor Exit Relay"
+            G.add_node(tor_label, node_type="Tor", color=TYPE_COLORS["Tor"], size=14, is_current=False)
+            G.add_edge(ip, tor_label)
+            
+    # 2. Domain and Registrar connections
+    domain = infra.get("domain") or case_data.get("sender_domain")
+    if not domain and case_data.get("sender"):
+        from core.domain_reputation import extract_domain
+        domain = extract_domain(case_data.get("sender"))
+    if domain and domain != "unknown.com":
+        G.add_node(domain, node_type="Domain", color=TYPE_COLORS["Domain"], size=16, is_current=False)
+        G.add_edge(case_id, domain)
+        
+        # Registrar
+        reg_intel = infra.get("registrar_intel") or {}
+        reg_name = reg_intel.get("registrar")
+        if not reg_name or reg_name == "Unknown":
+            drep = case_data.get("domain_reputation") or {}
+            reg_name = drep.get("registrar") if isinstance(drep, dict) else getattr(drep, "registrar", None)
+        if reg_name and reg_name != "Unknown":
+            reg_label = f"Registrar: {reg_name}"
+            G.add_node(reg_label, node_type="Registrar", color=TYPE_COLORS["Registrar"], size=14, is_current=False)
+            G.add_edge(domain, reg_label)
+            
+    # 3. Threat Feed
+    t_match = infra.get("threat_intel_match") or {}
+    if t_match.get("status") == "MATCH":
+        tf_label = f"Threat Feed: {t_match.get('feed_name') or 'Blacklist Match'}"
+        G.add_node(tf_label, node_type="Threat_Feed", color=TYPE_COLORS["Threat_Feed"], size=16, is_current=False)
+        if ip and ip in G.nodes:
+            G.add_edge(ip, tf_label)
+        elif domain and domain in G.nodes:
+            G.add_edge(domain, tf_label)
+        else:
+            G.add_edge(case_id, tf_label)
+            
+    # 4. Attachments / Hashes
+    for att in (case_data.get("attachment_analyses") or []):
+        sha = att.get("sha256") if isinstance(att, dict) else getattr(att, "sha256", None)
+        if sha and sha != "N/A":
+            h_label = f"SHA256: {sha[:8]}..."
+            G.add_node(h_label, node_type="Hash", color=TYPE_COLORS["Hash"], size=12, is_current=False)
+            G.add_edge(case_id, h_label)
+            
+    # 5. Dangerous URLs
+    for u in (case_data.get("url_analyses") or []):
+        u_risk = u.get("risk_level") if isinstance(u, dict) else getattr(u, "risk_level", "LOW")
+        if u_risk in ["CRITICAL", "HIGH", "MEDIUM"]:
+            u_dom = u.get("domain") if isinstance(u, dict) else getattr(u, "domain", "")
+            if u_dom and u_dom != domain:
+                u_label = f"URL: {u_dom}"
+                G.add_node(u_label, node_type="URL", color=TYPE_COLORS["URL"], size=12, is_current=False)
+                G.add_edge(case_id, u_label)
+
+    # Layout
+    pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42)
+    
+    edge_x = []
+    edge_y = []
+    for edge in G.edges():
+        x0, y0 = pos[edge[0]]
+        x1, y1 = pos[edge[1]]
+        edge_x.extend([x0, x1, None])
+        edge_y.extend([y0, y1, None])
+
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y,
+        line=dict(width=1.5, color='#475569'),
+        hoverinfo='none',
+        mode='lines'
+    )
+
+    node_x = []
+    node_y = []
+    node_colors = []
+    node_sizes = []
+    hover_texts = []
+    text_labels = []
+
+    for node in G.nodes():
+        x, y = pos[node]
+        node_x.append(x)
+        node_y.append(y)
+        data = G.nodes[node]
+        node_colors.append(data["color"])
+        node_sizes.append(data["size"])
+        ntype = data["node_type"]
+        
+        if ntype == "Case":
+            hover_texts.append(f"📁 Case: {node}")
+            text_labels.append(str(node))
+        else:
+            hover_texts.append(f"[{ntype}] {node}")
+            text_labels.append(str(node)[:18] + "..." if len(str(node)) > 18 else str(node))
+
+    node_trace = go.Scatter(
+        x=node_x, y=node_y,
+        mode='markers+text',
+        text=text_labels,
+        textposition="top center",
+        textfont=dict(size=10, color="#f8fafc"),
+        hoverinfo='text',
+        hovertext=hover_texts,
+        marker=dict(
+            showscale=False,
+            color=node_colors,
+            size=node_sizes,
+            line=dict(width=2, color='#0f172a')
+        )
+    )
+
+    fig = go.Figure(
+        data=[edge_trace, node_trace],
+        layout=go.Layout(
+            title=dict(text=f"🕸️ Threat Infrastructure Attack Graph — {case_id}", font=dict(size=15, color="#f8fafc")),
             showlegend=False,
             hovermode='closest',
             margin=dict(b=20, l=10, r=10, t=50),

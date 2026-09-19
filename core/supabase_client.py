@@ -7,6 +7,17 @@ import os
 from typing import Optional, Dict, Any, Tuple
 from supabase import create_client, Client, ClientOptions
 
+__all__ = [
+    "get_supabase_credentials",
+    "is_supabase_configured",
+    "get_supabase_client",
+    "sign_in_user",
+    "sign_up_user",
+    "sign_out_user",
+    "is_jwt_expired",
+    "refresh_user_session",
+]
+
 
 def get_supabase_credentials() -> Tuple[str, str]:
     """Retrieve Supabase URL and Anon Key from environment or Streamlit secrets."""
@@ -98,3 +109,49 @@ def sign_out_user(jwt: Optional[str] = None) -> bool:
         return True
     except Exception:
         return False
+
+
+def is_jwt_expired(jwt_token: Optional[str]) -> bool:
+    """
+    Checks whether a Supabase JWT access token has expired (or is close to expiring within 30s)
+    by decoding its base64 payload claims without cryptographic network verification.
+    """
+    if not jwt_token or not isinstance(jwt_token, str):
+        return True
+    try:
+        import base64
+        import json
+        import time
+
+        parts = jwt_token.strip().split(".")
+        if len(parts) != 3:
+            return True
+        payload_b64 = parts[1]
+        payload_b64 += "=" * ((4 - len(payload_b64) % 4) % 4)
+        payload_bytes = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        exp = payload.get("exp", 0)
+        # 30-second margin before hard rejection
+        return time.time() >= (exp - 30)
+    except Exception:
+        return True
+
+
+def refresh_user_session(refresh_token: str) -> Tuple[bool, Any]:
+    """
+    Refreshes an expired user JWT using their stored refresh token.
+    Returns: (is_success, session_or_error)
+    """
+    url, key = get_supabase_credentials()
+    if not url or not key or not refresh_token:
+        return False, "Supabase credentials or refresh token missing."
+
+    try:
+        client = create_client(url, key)
+        res = client.auth.refresh_session(refresh_token.strip())
+        if res and res.session:
+            return True, res.session
+        return False, "Failed to refresh session."
+    except Exception as e:
+        return False, f"Session refresh error: {str(e)}"
+

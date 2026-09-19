@@ -2,6 +2,7 @@ import re
 from typing import Dict, Any, List
 from core.indicators import get_registrable_domain
 from core.domain_intel import KNOWN_ESP_DOMAINS
+from core.auth_claims import KNOWN_LEGIT_ESPS
 
 def evaluate_rules(
     parsed_email: Dict[str, Any],
@@ -12,7 +13,9 @@ def evaluate_rules(
     lookalike_analysis: Any = None,
     bec_telemetry: Any = None,
     relay_transit: Any = None,
-    content_type: Any = None
+    content_type: Any = None,
+    infrastructure_intel: Any = None,
+    normalization_data: Any = None
 ) -> List[Dict[str, str]]:
     findings = []
     headers = parsed_email.get("headers", {})
@@ -388,24 +391,32 @@ def evaluate_rules(
                             bool(return_path_root and (return_path_root in act_root or act_root in return_path_root))
         is_social = (disp_root in COMMON_SOCIAL_PLATFORMS) or any(s in disp_root for s in COMMON_SOCIAL_PLATFORMS)
 
-        if is_sensitive and not is_brand_dest_aligned and not is_sender_brand_aligned and not is_sender_aligned:
+        is_financial_target = any(f in disp_root for f in [
+            "sbi", "hdfc", "icici", "axisbank", "kotak", "pnbindia", "paypal", "chase",
+            "wellsfargo", "bankofamerica", "citi", "incometax"
+        ])
+
+        if is_financial_target and not is_brand_dest_aligned and not is_sender_brand_aligned and not is_sender_aligned:
             sp_severity = "HIGH"
-            explanation = "Adversary masked a sensitive institutional brand address using a false visible target."
-        elif not auth_ok and not is_sender_aligned and not is_social:
-            sp_severity = "HIGH"
-            explanation = "Unauthenticated message contains deceptive anchor routing away from apparent visible host."
+            explanation = "Adversary masked a sensitive banking or financial address using an unrelated target."
         elif has_active_cred_lure and not is_sender_aligned:
             sp_severity = "HIGH"
             explanation = "Adversary paired credential/payment request with deceptive hyperlink anchor."
+        elif not auth_ok and not is_sender_aligned and not is_social:
+            sp_severity = "HIGH"
+            explanation = "Unauthenticated message contains deceptive anchor routing away from apparent visible host."
+        elif auth_ok and is_newsletter and (act_root in KNOWN_ESP_DOMAINS or act_root in KNOWN_LEGIT_ESPS) and not has_active_cred_lure:
+            sp_severity = "LOW"
+            explanation = "Outbound reference link wrapped in bulk email delivery provider tracking domain."
         elif auth_ok and is_newsletter and is_social:
             sp_severity = "LOW"
             explanation = "Standard social/community platform reference wrapped in authorized ESP click tracker."
         elif auth_ok and is_sender_aligned:
             sp_severity = "LOW"
             explanation = "Hyperlink routed via tracking infrastructure aligned with authenticated sender organization."
-        elif auth_ok and is_newsletter and (act_root in KNOWN_ESP_DOMAINS or not has_active_cred_lure):
-            sp_severity = "LOW"
-            explanation = "Outbound reference link wrapped in bulk email delivery provider tracking domain."
+        elif is_sensitive and not is_brand_dest_aligned and not is_sender_brand_aligned and not is_sender_aligned:
+            sp_severity = "HIGH"
+            explanation = "Adversary masked a sensitive institutional brand address using a false visible target."
         else:
             sp_severity = "MEDIUM"
             explanation = "Hyperlink destination differs from visible text. Review target before navigating."
@@ -418,13 +429,156 @@ def evaluate_rules(
             "explanation": explanation
         })
 
+    # 22. Infrastructure Intelligence Rules (SIH26106)
+    if infrastructure_intel:
+        def _get_f(obj, field, default=None):
+            if isinstance(obj, dict):
+                return obj.get(field, default)
+            return getattr(obj, field, default)
+
+        t_match = _get_f(infrastructure_intel, "threat_intel_match")
+        tor_ind = _get_f(infrastructure_intel, "tor_indicator")
+        vpn_ind = _get_f(infrastructure_intel, "vpn_indicator")
+        relay_ind = _get_f(infrastructure_intel, "open_relay_indicator")
+        botnet_ind = _get_f(infrastructure_intel, "botnet_indicator")
+        cloud_ind = _get_f(infrastructure_intel, "cloud_indicator")
+
+        # RULE-022: Threat Intelligence / Blacklist / Botnet C2 Match
+        t_status = _get_f(t_match, "status")
+        b_status = _get_f(botnet_ind, "status")
+        if t_status == "MATCH":
+            findings.append({
+                "rule_id": "RULE-022",
+                "finding": f"Known Threat Intelligence Blacklist Match ({_get_f(t_match, 'category', 'Malicious')})",
+                "evidence": f"Feed: {_get_f(t_match, 'feed_name', 'Local Threat Intel')} | Evidence: {_get_f(t_match, 'evidence', 'Matched malicious IOC')}",
+                "severity": "HIGH",
+                "explanation": "Originating IP, host, or sending domain is explicitly flagged on an active threat intelligence blacklist."
+            })
+        elif b_status == "INDICATED":
+            findings.append({
+                "rule_id": "RULE-022",
+                "finding": f"Botnet / Spambot Infrastructure Indicated ({_get_f(botnet_ind, 'botnet_family', 'Spambot Pool')})",
+                "evidence": _get_f(botnet_ind, "evidence", "Botnet indicators identified"),
+                "severity": "HIGH",
+                "explanation": "Originating host or network correlates with automated spambot pools or botnet command-and-control."
+            })
+
+        # RULE-023: Tor Exit Node Origin
+        tor_status = _get_f(tor_ind, "status")
+        if tor_status == "DETECTED":
+            findings.append({
+                "rule_id": "RULE-023",
+                "finding": "Tor Anonymization Exit Node Detected",
+                "evidence": _get_f(tor_ind, "evidence", "Verified Tor exit relay"),
+                "severity": "HIGH",
+                "explanation": "Mail origin connects directly from a verified Tor exit relay. Origin sender identity is anonymized."
+            })
+
+        # RULE-024: Commercial VPN / Anonymizing Proxy
+        vpn_status = _get_f(vpn_ind, "status")
+        if vpn_status == "DETECTED":
+            auth_ok = auth_alignment and getattr(auth_alignment, "effective_dmarc", "") in ["PASS", "PASS (Delegated ESP)"]
+            vpn_sev = "LOW" if (auth_ok or is_newsletter) else "MEDIUM"
+            findings.append({
+                "rule_id": "RULE-024",
+                "finding": f"Commercial VPN / Anonymizing Proxy Detected ({_get_f(vpn_ind, 'provider', 'VPN')})",
+                "evidence": _get_f(vpn_ind, "evidence", "Commercial VPN network detected"),
+                "severity": vpn_sev,
+                "explanation": "Originating mail delivery traversed commercial VPN or anonymizing proxy hosting infrastructure."
+            })
+
+        # RULE-024-RELAY: Suspect Open Relay / Non-Standard Transit
+        relay_status = _get_f(relay_ind, "status")
+        if relay_status == "INDICATED":
+            findings.append({
+                "rule_id": "RULE-024-RELAY",
+                "finding": "Suspect Open-Relay Transit Indicators Detected",
+                "evidence": _get_f(relay_ind, "evidence", "Unauthenticated relay hop detected"),
+                "severity": "MEDIUM",
+                "explanation": "Passive Received header analysis indicates potential unauthenticated open-relay transit or transit anomaly."
+            })
+
+        # RULE-025: Cloud-Hosted Infrastructure with Identity Anomaly
+        is_cloud = _get_f(cloud_ind, "is_cloud_hosted", False)
+        if is_cloud:
+            auth_ok = auth_alignment and getattr(auth_alignment, "effective_dmarc", "") in ["PASS", "PASS (Delegated ESP)"]
+            is_lookalike = lookalike_analysis and getattr(lookalike_analysis, "is_lookalike", False)
+            c_prov = _get_f(cloud_ind, "provider", "Cloud")
+            if is_lookalike or not auth_ok:
+                findings.append({
+                    "rule_id": "RULE-025",
+                    "finding": f"Cloud VPS Origin with Identity Anomaly ({c_prov})",
+                    "evidence": f"Provider: {c_prov} ({_get_f(cloud_ind, 'asn', '')}) | Auth: {getattr(auth_alignment, 'effective_dmarc', 'FAIL') if auth_alignment else 'UNALIGNED'}",
+                    "severity": "HIGH" if is_lookalike else "MEDIUM",
+                    "explanation": f"Email originated from {c_prov} cloud infrastructure without proper sender identity alignment or with lookalike brand mimicry."
+                })
+
+    # 23. Confusable Character / Mixed-Script Obfuscation (RULE-026)
+    # 24. Spaced Token Obfuscation (RULE-027)
+    if normalization_data is None:
+        try:
+            from core.normalization import normalize_email_payload
+            normalization_data = normalize_email_payload(
+                headers.get("subject", ""),
+                parsed_email.get("body", "")
+            )
+        except Exception:
+            normalization_data = None
+
+    if normalization_data:
+        # RULE-026: Confusable / Mixed-Script Detection
+        conf_ev = normalization_data.get("confusable_evidence", {})
+        if conf_ev.get("has_mixed_script") or conf_ev.get("confusable_count", 0) > 0:
+            c_count = conf_ev.get("confusable_count", 0)
+            sample_toks = [f["token"] for f in conf_ev.get("findings", [])[:3]]
+            sample_str = f" in '{', '.join(sample_toks)}'" if sample_toks else ""
+            findings.append({
+                "rule_id": "RULE-026",
+                "finding": f"Mixed-Script / Confusable Homoglyphs Detected ({c_count} char(s))",
+                "evidence": f"Found {c_count} confusable character(s){sample_str}",
+                "severity": "MEDIUM" if not auth_ok else "LOW",
+                "explanation": "Email content contains mixed-script sequences (e.g. Cyrillic/Greek mimicking Latin) often used for visual deception."
+            })
+
+        # RULE-027: Bounded Spaced-Token Obfuscation
+        # CRITICAL RULE: BRAND ALONE MUST NOT PRODUCE HIGH
+        spaced_tokens = normalization_data.get("spaced_token_findings", [])
+        if spaced_tokens:
+            has_cred = any(f.get("rule_id") in ["RULE-006", "RULE-020"] for f in findings)
+            has_urg = any(f.get("rule_id") == "RULE-007" for f in findings)
+            has_susp_link = any(f.get("rule_id") in ["RULE-012", "RULE-019"] for f in findings)
+
+            spaced_brands = [st["normalized"] for st in spaced_tokens if st.get("is_brand_or_lure")]
+            first_orig = spaced_tokens[0]["original"]
+            first_norm = spaced_tokens[0]["normalized"]
+
+            if spaced_brands:
+                if (has_cred or has_susp_link) and not auth_ok:
+                    sev_27 = "HIGH"
+                    expl_27 = "Adversary combined spaced-token brand obfuscation with credential harvesting or deceptive hyperlinks."
+                elif has_cred or has_susp_link or has_urg:
+                    sev_27 = "MEDIUM"
+                    expl_27 = "Spaced brand obfuscation identified alongside urgency or credential keywords."
+                else:
+                    sev_27 = "LOW"  # BRAND ALONE MUST NOT PRODUCE HIGH
+                    expl_27 = "Spaced character sequences identified. Informational signal without corroborating threat lure."
+
+                findings.append({
+                    "rule_id": "RULE-027",
+                    "finding": f"Spaced Token Brand Obfuscation ('{first_norm}')",
+                    "evidence": f"Original spaced text: '{first_orig}' -> Normalized: '{first_norm}'",
+                    "severity": sev_27,
+                    "explanation": expl_27
+                })
+
     return findings
 
 def calculate_hybrid_risk(
     rule_findings: List[Dict[str, str]],
     ml_prob: float,
     auth_alignment: Any = None,
-    content_type: Any = None
+    content_type: Any = None,
+    is_ml_borderline: bool = False
 ) -> tuple[str, List[str]]:
     risk_score = "LOW"
     reasons = []
@@ -436,8 +590,20 @@ def calculate_hybrid_risk(
     high_rules = sum(1 for f in rule_findings if f.get("severity") == "HIGH")
     medium_rules = sum(1 for f in rule_findings if f.get("severity") == "MEDIUM")
 
+    is_borderline = is_ml_borderline or (0.38 <= ml_prob <= 0.62)
+
     if high_rules >= 1:
         risk_score = "HIGH"
+    elif is_borderline:
+        # Borderline ML prediction: ML score alone CANNOT force HIGH
+        if not auth_ok and medium_rules >= 3:
+            risk_score = "SUSPICIOUS"
+        elif auth_ok and high_rules == 0:
+            risk_score = "LOW"
+        elif medium_rules >= 2 and not auth_ok:
+            risk_score = "SUSPICIOUS"
+        else:
+            risk_score = "LOW"
     elif not auth_ok and (ml_prob > 0.85 or (medium_rules >= 3 and ml_prob > 0.6)):
         risk_score = "HIGH"
     elif not auth_ok and (ml_prob > 0.65 or medium_rules >= 2):
@@ -452,7 +618,10 @@ def calculate_hybrid_risk(
         reasons.append(f"Critical forensic violations detected ({high_rules} High-Severity Finding{'s' if high_rules > 1 else ''}).")
     if medium_rules > 0 and (not auth_ok or high_rules > 0):
         reasons.append(f"Suspicious heuristic indicators detected ({medium_rules}).")
-    if ml_prob > 0.85 and not auth_ok:
+
+    if is_borderline:
+        reasons.append(f"ML confidence is Borderline ({ml_prob:.2f}); final risk verdict is grounded primarily in deterministic forensic rules.")
+    elif ml_prob > 0.85 and not auth_ok:
         reasons.append(f"ML probability indicates strong phishing signals ({ml_prob:.2f}).")
     elif ml_prob > 0.65 and not auth_ok:
         reasons.append(f"ML probability indicates moderate phishing signals ({ml_prob:.2f}).")

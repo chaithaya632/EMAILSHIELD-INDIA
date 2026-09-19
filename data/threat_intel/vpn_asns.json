@@ -1,0 +1,70 @@
+{
+  "vpn_providers": [
+    {
+      "name": "Mullvad VPN",
+      "asns": ["210644", "208323"],
+      "org_keywords": ["mullvad", "amagicom"],
+      "confidence": 95
+    },
+    {
+      "name": "NordVPN / Tefincom",
+      "asns": ["206418", "60060", "202422"],
+      "org_keywords": ["nordvpn", "tefincom", "cloudvider", "nord security"],
+      "confidence": 95
+    },
+    {
+      "name": "ExpressVPN",
+      "asns": ["209087", "400490"],
+      "org_keywords": ["expressvpn", "kape technologies"],
+      "confidence": 95
+    },
+    {
+      "name": "Surfshark",
+      "asns": ["212238"],
+      "org_keywords": ["surfshark"],
+      "confidence": 95
+    },
+    {
+      "name": "Private Internet Access (PIA)",
+      "asns": ["35908", "400262"],
+      "org_keywords": ["private internet access", "london trust media"],
+      "confidence": 95
+    },
+    {
+      "name": "ProtonVPN",
+      "asns": ["62371", "51684"],
+      "org_keywords": ["proton ag", "protonvpn"],
+      "confidence": 95
+    },
+    {
+      "name": "CyberGhost",
+      "asns": ["204957"],
+      "org_keywords": ["cyberghost"],
+      "confidence": 95
+    },
+    {
+      "name": "IPVanish",
+      "asns": ["36352", "26347"],
+      "org_keywords": ["ipvanish", "mudhook marketing", "stackpath vpn"],
+      "confidence": 95
+    },
+    {
+      "name": "Windscribe",
+      "asns": ["207137"],
+      "org_keywords": ["windscribe"],
+      "confidence": 95
+    },
+    {
+      "name": "TunnelBear",
+      "asns": ["54687"],
+      "org_keywords": ["tunnelbear"],
+      "confidence": 95
+    },
+    {
+      "name": "Generic Commercial VPN / Proxy Hosting",
+      "asns": ["9009", "16276", "20473", "51852", "62240"],
+      "org_keywords": ["m247", "datapacket", "clouvider", "tzulo", "leaseweb", "quadranet", "packet exchange", "zenlayer", "f2k hosting"],
+      "confidence": 80
+    }
+  ]
+}

@@ -1,32 +1,30 @@
-# EMAILSHIELD INDIA - Production Dockerfile
-FROM python:3.11-slim
+# Dockerfile for EMAILSHIELD Sentinel External Worker
+# Hardened, unprivileged container runtime for outbound-only worker service.
 
-# Prevent Python from writing pyc files and buffering stdout/stderr
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+FROM python:3.12-slim
+
+# Security: run as non-root user
+RUN groupadd -g 10001 sentinel && \
+    useradd -u 10001 -g sentinel -s /bin/bash -m sentinel
 
 WORKDIR /app
 
-# Install system utilities needed for build/network tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# Install dependencies
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Copy only worker and core modules (zero secrets, zero environment files, zero private keys)
+COPY core/ /app/core/
+COPY worker/ /app/worker/
 
-# Copy application files
-COPY . .
+# Set ownership
+RUN chown -R sentinel:sentinel /app
 
-# Expose default Streamlit port
-EXPOSE 8501
+# Switch to unprivileged user
+USER sentinel
 
-# Add healthcheck
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:8501/_stcore/health || exit 1
+# Outbound-only service: no public ports exposed
+# Environment secrets (SENTINEL_WORKER_DB_URL, SENTINEL_WORKER_PRIVATE_KEY, etc.)
+# must be injected securely at runtime via orchestration / secret manager.
 
-# Launch application
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
+ENTRYPOINT ["python", "-m", "worker"]

@@ -1,0 +1,23 @@
+{
+  "description": "Passive open-relay indicators and suspicious mail transit signatures (NO active SMTP probing).",
+  "suspect_transit_keywords": [
+    "open relay",
+    "unauthenticated relay",
+    "relayed without authentication",
+    "anonymous relay",
+    "open-relay",
+    "third-party relay"
+  ],
+  "abusive_transit_asns": [
+    {
+      "asn": "45102",
+      "name": "Abusive Transit ASN",
+      "reason": "Host network flagged for permitting unverified outbound SMTP relaying"
+    },
+    {
+      "asn": "206418",
+      "name": "Unverified Commercial Relay",
+      "reason": "Transit node frequently associated with multi-hop relay anonymity forwarding"
+    }
+  ]
+}
