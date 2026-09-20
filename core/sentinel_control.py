@@ -574,6 +574,40 @@ def get_user_checkpoint(user_id: str, client: Any) -> Optional[Dict[str, Any]]:
         return None
 
 
+def upsert_user_checkpoint(
+    user_id: str,
+    worker_id: str,
+    mailbox_id: str,
+    last_processed_uid: int,
+    client: Any,
+    folder_name: str = "INBOX",
+    last_processed_msg_id: Optional[str] = None,
+    uid_validity: int = 1,
+) -> Tuple[bool, Any]:
+    """
+    Persists authoritative checkpoint record to Supabase under authenticated user RLS.
+    """
+    if not client or not user_id or not worker_id or not mailbox_id:
+        return False, "Missing required parameters for checkpoint upsert"
+    try:
+        payload = {
+            "user_id": user_id,
+            "worker_id": worker_id,
+            "mailbox_id": mailbox_id,
+            "folder_name": folder_name,
+            "uid_validity": uid_validity,
+            "last_processed_uid": last_processed_uid,
+            "last_processed_msg_id": last_processed_msg_id,
+        }
+        res = client.table("sentinel_checkpoints").upsert(
+            payload,
+            on_conflict="user_id,mailbox_id,folder_name"
+        ).execute()
+        return True, res.data[0] if res and res.data else {}
+    except Exception as e:
+        return False, str(e)
+
+
 # =====================================================================
 # Alert Configuration Operations
 # =====================================================================

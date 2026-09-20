@@ -1046,7 +1046,7 @@ elif selected_nav == "📡 Live Mail Analysis":
             # Section 16 Safe Diagnostics Block
             try:
                 from core.sentinel_stats import get_sentinel_worker_runtime
-                worker_rt = get_sentinel_worker_runtime()
+                worker_rt = get_sentinel_worker_runtime(worker_rec=worker_rec)
                 worker_proc_alive = worker_rt.get("worker_process_alive", False)
                 worker_pid = worker_rt.get("pid")
                 worker_pid_str = str(worker_pid) if worker_pid else "NONE"

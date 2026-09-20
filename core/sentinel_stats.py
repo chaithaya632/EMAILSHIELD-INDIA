@@ -325,12 +325,15 @@ def get_user_sentinel_stats(
 
     # If in-memory poll has not occurred yet, seed UID & Last Scan from checkpoint if available
     if not m.has_polled and checkpoint_rec:
-        if checkpoint_rec.get("last_processed_uid"):
+        if checkpoint_rec.get("last_processed_uid") is not None:
             stats_dict["last_processed_uid"] = int(checkpoint_rec["last_processed_uid"])
             if stats_dict.get("highest_observed_uid", 0) < stats_dict["last_processed_uid"]:
                 stats_dict["highest_observed_uid"] = stats_dict["last_processed_uid"]
         if checkpoint_rec.get("last_scan_timestamp"):
             stats_dict["last_poll_time"] = str(checkpoint_rec["last_scan_timestamp"])
+            stats_dict["last_successful_imap_poll"] = str(checkpoint_rec["last_scan_timestamp"])
+            stats_dict["has_polled"] = True
+            stats_dict["last_poll_result"] = "0 new messages"
 
     import logging
     stats_logger = logging.getLogger("sentinel.stats")
@@ -428,59 +431,81 @@ def is_pid_alive(pid: Optional[int]) -> bool:
         return False
 
 
-def get_sentinel_worker_runtime() -> Dict[str, Any]:
+def get_sentinel_worker_runtime(worker_rec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Checks the real runtime state of the external Sentinel worker process.
-    Never fakes RUNNING status unless a real OS worker process is verified alive.
+    Never fakes RUNNING status unless a real OS worker process is verified alive,
+    or a verified Supabase worker record confirms an active lease.
     """
     runtime_path = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
         "data", "local", "sentinel_worker_runtime.json"
     )
-    if not os.path.exists(runtime_path):
-        return {
-            "worker_configured": False,
-            "worker_started": False,
-            "worker_process_alive": False,
-            "worker_poll_loop_active": False,
-            "worker_last_heartbeat": "Never",
-            "pid": None,
-            "status": "STOPPED",
-        }
+    if os.path.exists(runtime_path):
+        try:
+            with open(runtime_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-    try:
-        with open(runtime_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            raw_pid = data.get("pid")
+            pid = int(raw_pid) if raw_pid else None
+            alive = is_pid_alive(pid) if pid else False
+            last_hb = float(data.get("last_heartbeat", 0))
+            hb_fresh = (time.time() - last_hb) < 120.0 if last_hb > 0 else False
+            configured = bool(data.get("worker_id"))
+            started = bool(data.get("started_at"))
+            loop_active = alive and hb_fresh and data.get("status") == "RUNNING"
+            effective_status = "RUNNING" if loop_active else "STOPPED"
 
-        raw_pid = data.get("pid")
-        pid = int(raw_pid) if raw_pid else None
-        alive = is_pid_alive(pid) if pid else False
-        last_hb = float(data.get("last_heartbeat", 0))
-        hb_fresh = (time.time() - last_hb) < 120.0 if last_hb > 0 else False
-        configured = bool(data.get("worker_id"))
-        started = bool(data.get("started_at"))
-        loop_active = alive and hb_fresh and data.get("status") == "RUNNING"
-        effective_status = "RUNNING" if loop_active else "STOPPED"
+            return {
+                "worker_configured": configured,
+                "worker_started": started,
+                "worker_process_alive": alive,
+                "worker_poll_loop_active": loop_active,
+                "worker_last_heartbeat": data.get("last_heartbeat_str", "Never") if last_hb > 0 else "Never",
+                "pid": pid if alive else None,
+                "status": effective_status,
+            }
+        except Exception:
+            pass
 
+    # Authoritative fallback to Supabase worker_rec if present (for cloud container deployments)
+    if worker_rec and isinstance(worker_rec, dict):
+        configured = bool(worker_rec.get("id"))
+        actual_state = worker_rec.get("actual_state", "STOPPED")
+        desired_state = worker_rec.get("desired_state", "STOPPED")
+        lease_owner = worker_rec.get("lease_owner")
+        lease_expires = worker_rec.get("lease_expires_at")
+
+        lease_active = False
+        if lease_owner and lease_expires:
+            try:
+                import datetime
+                if isinstance(lease_expires, str):
+                    dt = datetime.datetime.fromisoformat(lease_expires.replace("Z", "+00:00"))
+                    lease_active = dt > datetime.datetime.now(datetime.timezone.utc)
+            except Exception:
+                lease_active = False
+
+        is_running = (actual_state == "RUNNING" and lease_active)
         return {
             "worker_configured": configured,
-            "worker_started": started,
-            "worker_process_alive": alive,
-            "worker_poll_loop_active": loop_active,
-            "worker_last_heartbeat": data.get("last_heartbeat_str", "Never") if last_hb > 0 else "Never",
-            "pid": pid if alive else None,
-            "status": effective_status,
-        }
-    except Exception:
-        return {
-            "worker_configured": False,
-            "worker_started": False,
-            "worker_process_alive": False,
-            "worker_poll_loop_active": False,
-            "worker_last_heartbeat": "Never",
+            "worker_started": configured and desired_state == "RUNNING",
+            "worker_process_alive": is_running,
+            "worker_poll_loop_active": is_running,
+            "worker_last_heartbeat": str(worker_rec.get("last_heartbeat", "Never")) if worker_rec.get("last_heartbeat") else "Never",
             "pid": None,
-            "status": "STOPPED",
+            "status": "RUNNING" if is_running else ("STOPPED" if actual_state == "STOPPED" else actual_state),
         }
+
+    return {
+        "worker_configured": False,
+        "worker_started": False,
+        "worker_process_alive": False,
+        "worker_poll_loop_active": False,
+        "worker_last_heartbeat": "Never",
+        "pid": None,
+        "status": "STOPPED",
+    }
 
 
 def start_sentinel_worker_daemon() -> Tuple[bool, str, Optional[int]]:
