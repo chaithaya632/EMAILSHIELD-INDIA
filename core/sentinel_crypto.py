@@ -310,8 +310,10 @@ def load_private_key_from_pem(pem_str: str) -> rsa.RSAPrivateKey:
 def load_public_key_from_env(env_var: str = "SENTINEL_WORKER_PUBLIC_KEY") -> rsa.RSAPublicKey:
     """
     Retrieves and parses the worker public key from environment variables,
-    Streamlit secrets, or local configuration.
-    Used in Edge Function / provisioning context. Fails closed.
+    Streamlit secrets, local configuration files, or derives it from the
+    worker private key. If no keys exist, automatically provisions a strong
+    asymmetric keypair into data/local/ for seamless zero-config operation.
+    Used in Edge Function / provisioning context.
     """
     val = os.environ.get(env_var)
     if not val:
@@ -326,20 +328,172 @@ def load_public_key_from_env(env_var: str = "SENTINEL_WORKER_PUBLIC_KEY") -> rsa
             val = _lookup_local_env_var(env_var)
         except Exception:
             pass
-    if not val:
-        raise KeyNotFoundError(f"Worker public key environment variable '{env_var}' is not set or empty.")
-    return load_public_key_from_pem(val)
+
+    if val:
+        if os.path.isfile(val):
+            try:
+                with open(val, "r", encoding="utf-8") as f:
+                    val = f.read().strip()
+            except Exception:
+                pass
+        try:
+            return load_public_key_from_pem(val)
+        except Exception:
+            pass
+
+    # Check local key files on disk
+    proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidate_pub_paths = [
+        os.path.join(proj_root, "data", "local", "sentinel_worker_public.pem"),
+        os.path.join(proj_root, "scratch", "sentinel_worker_public.pem"),
+        os.path.join(os.getcwd(), "data", "local", "sentinel_worker_public.pem"),
+        os.path.join(os.getcwd(), "scratch", "sentinel_worker_public.pem"),
+    ]
+    for p in candidate_pub_paths:
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if "BEGIN" in content and "PUBLIC KEY" in content:
+                    return load_public_key_from_pem(content)
+            except Exception:
+                pass
+
+    # Check if a worker private key is available to derive public key
+    candidate_priv_paths = [
+        os.path.join(proj_root, "data", "local", "sentinel_worker_private.pem"),
+        os.path.join(proj_root, "scratch", "sentinel_worker_private.pem"),
+        os.path.join(os.getcwd(), "data", "local", "sentinel_worker_private.pem"),
+        os.path.join(os.getcwd(), "scratch", "sentinel_worker_private.pem"),
+    ]
+
+    priv_val = os.environ.get("SENTINEL_WORKER_PRIVATE_KEY")
+    if not priv_val:
+        try:
+            import streamlit as st
+            priv_val = st.secrets.get("SENTINEL_WORKER_PRIVATE_KEY")
+        except Exception:
+            pass
+    if not priv_val:
+        try:
+            from worker.imap_client import _lookup_local_env_var
+            priv_val = _lookup_local_env_var("SENTINEL_WORKER_PRIVATE_KEY")
+        except Exception:
+            pass
+
+    if priv_val:
+        if os.path.isfile(priv_val):
+            candidate_priv_paths.insert(0, priv_val)
+        else:
+            try:
+                priv_key = load_private_key_from_pem(priv_val)
+                pub_key = priv_key.public_key()
+                try:
+                    local_dir = os.path.join(proj_root, "data", "local")
+                    os.makedirs(local_dir, exist_ok=True)
+                    out_pub = os.path.join(local_dir, "sentinel_worker_public.pem")
+                    with open(out_pub, "w", encoding="utf-8") as f:
+                        f.write(export_public_key_pem(pub_key))
+                except Exception:
+                    pass
+                return pub_key
+            except Exception:
+                pass
+
+    for p in candidate_priv_paths:
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if "BEGIN" in content and "PRIVATE KEY" in content:
+                    priv_key = load_private_key_from_pem(content)
+                    pub_key = priv_key.public_key()
+                    try:
+                        local_dir = os.path.join(proj_root, "data", "local")
+                        os.makedirs(local_dir, exist_ok=True)
+                        out_pub = os.path.join(local_dir, "sentinel_worker_public.pem")
+                        with open(out_pub, "w", encoding="utf-8") as f:
+                            f.write(export_public_key_pem(pub_key))
+                    except Exception:
+                        pass
+                    return pub_key
+            except Exception:
+                pass
+
+    # Auto-generate asymmetric worker keypair for zero-configuration operation
+    try:
+        priv_key, pub_key = generate_worker_asymmetric_keypair(DEFAULT_RSA_KEY_SIZE)
+        priv_pem = export_private_key_pem(priv_key)
+        pub_pem = export_public_key_pem(pub_key)
+        local_dir = os.path.join(proj_root, "data", "local")
+        os.makedirs(local_dir, exist_ok=True)
+        priv_file = os.path.join(local_dir, "sentinel_worker_private.pem")
+        pub_file = os.path.join(local_dir, "sentinel_worker_public.pem")
+        if not os.path.exists(priv_file):
+            with open(priv_file, "w", encoding="utf-8") as f:
+                f.write(priv_pem)
+            try:
+                os.chmod(priv_file, 0o600)
+            except Exception:
+                pass
+        if not os.path.exists(pub_file):
+            with open(pub_file, "w", encoding="utf-8") as f:
+                f.write(pub_pem)
+        return pub_key
+    except Exception as gen_err:
+        raise KeyNotFoundError(
+            f"Worker public key could not be loaded from '{env_var}', local files, or generated: {gen_err}"
+        )
 
 
 def load_private_key_from_env(env_var: str = "SENTINEL_WORKER_PRIVATE_KEY") -> rsa.RSAPrivateKey:
     """
-    Retrieves and parses the worker private key from environment variables.
+    Retrieves and parses the worker private key from environment variables,
+    Streamlit secrets, local configuration, or local key files.
     Used strictly in isolated Worker Daemon context. Fails closed.
     """
     val = os.environ.get(env_var)
     if not val:
-        raise KeyNotFoundError(f"Worker private key environment variable '{env_var}' is not set or empty.")
-    return load_private_key_from_pem(val)
+        try:
+            import streamlit as st
+            val = st.secrets.get(env_var)
+        except Exception:
+            pass
+    if not val:
+        try:
+            from worker.imap_client import _lookup_local_env_var
+            val = _lookup_local_env_var(env_var)
+        except Exception:
+            pass
+
+    if val:
+        if os.path.isfile(val):
+            try:
+                with open(val, "r", encoding="utf-8") as f:
+                    val = f.read().strip()
+            except Exception:
+                pass
+        return load_private_key_from_pem(val)
+
+    # Check local key files
+    proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.path.join(proj_root, "data", "local", "sentinel_worker_private.pem"),
+        os.path.join(proj_root, "scratch", "sentinel_worker_private.pem"),
+        os.path.join(os.getcwd(), "data", "local", "sentinel_worker_private.pem"),
+        os.path.join(os.getcwd(), "scratch", "sentinel_worker_private.pem"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if "BEGIN" in content and "PRIVATE KEY" in content:
+                    return load_private_key_from_pem(content)
+            except Exception:
+                pass
+
+    raise KeyNotFoundError(f"Worker private key environment variable '{env_var}' is not set or empty.")
 
 
 def encrypt_credential_asymmetric(

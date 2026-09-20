@@ -367,15 +367,16 @@ def connect_user_sentinel_mailbox(
 
     # 1. Resolve Worker Public Key for Asymmetric Hybrid Envelope Encryption
     pk = public_key
+    last_err = ""
     if pk is None:
         try:
             from core.sentinel_crypto import load_public_key_from_env
             pk = load_public_key_from_env("SENTINEL_WORKER_PUBLIC_KEY")
-        except Exception:
-            pass
+        except Exception as e:
+            last_err = f" ({str(e)})"
 
     if pk is None:
-        return False, "Cannot encrypt credential: Worker Public Key is unavailable."
+        return False, f"Cannot encrypt credential: Worker Public Key is unavailable{last_err}."
 
     # 2. Encrypt Credential Asymmetrically
     try:

@@ -317,6 +317,20 @@ def _lookup_local_env_var(var_name: str) -> str:
                     c = f.read().strip()
                     if c:
                         return c
+        elif var_name in ("SENTINEL_WORKER_PUBLIC_KEY", "SENTINEL_PUBLIC_KEY"):
+            pub_file = os.path.join(local_dir, "sentinel_worker_public.pem")
+            if os.path.exists(pub_file):
+                with open(pub_file, "r", encoding="utf-8") as f:
+                    c = f.read().strip()
+                    if "BEGIN" in c and "PUBLIC KEY" in c:
+                        return c
+        elif var_name in ("SENTINEL_WORKER_PRIVATE_KEY", "SENTINEL_PRIVATE_KEY"):
+            priv_file = os.path.join(local_dir, "sentinel_worker_private.pem")
+            if os.path.exists(priv_file):
+                with open(priv_file, "r", encoding="utf-8") as f:
+                    c = f.read().strip()
+                    if "BEGIN" in c and "PRIVATE KEY" in c:
+                        return c
         elif var_name == "SENTINEL_ENABLE_PRODUCTION_POLLING":
             if "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ:
                 return ""
