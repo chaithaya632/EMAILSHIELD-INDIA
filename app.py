@@ -829,6 +829,8 @@ elif selected_nav == "📡 Live Mail Analysis":
         current_poll_interval = 1
         has_worker = worker_rec is not None
         worker_id = worker_rec.get("id") if worker_rec else str(uuid.uuid4())
+        raw_email = mailbox_rec.get("email_address", "") if mailbox_rec else ""
+        masked_email = mask_email_address(raw_email)
 
         # Determine overall Sentinel status
         if is_mailbox_active and desired_state == "RUNNING":
