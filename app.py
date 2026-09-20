@@ -1035,110 +1035,120 @@ elif selected_nav == "📡 Live Mail Analysis":
         ])
 
         with tab_health:
-            from core.sentinel_stats import get_user_sentinel_stats
-            sentinel_stats = get_user_sentinel_stats(
-                user_id=current_user_id,
-                mailbox_id=mailbox_rec.get("id") if mailbox_rec else None,
-                client=user_client,
-                checkpoint_rec=checkpoint_rec
-            )
+            @st.fragment(run_every=2)
+            def render_live_activity_tab():
+                # Re-fetch fresh state on each fragment tick so cloud and local get latest updates
+                fresh_worker_rec = get_user_worker(current_user_id, user_client)
+                fresh_checkpoint_rec = get_user_checkpoint(current_user_id, user_client)
 
-            # Section 16 Safe Diagnostics Block
-            try:
-                from core.sentinel_stats import get_sentinel_worker_runtime
-                worker_rt = get_sentinel_worker_runtime(worker_rec=worker_rec)
-                worker_proc_alive = worker_rt.get("worker_process_alive", False)
-                worker_pid = worker_rt.get("pid")
-                worker_pid_str = str(worker_pid) if worker_pid else "NONE"
-                worker_proc_str = "RUNNING" if worker_proc_alive else "FAIL"
-                worker_loop_str = "ACTIVE" if worker_rt.get("worker_poll_loop_active") else "FAIL"
-                worker_hb = worker_rt.get("worker_last_heartbeat", "Never")
-            except Exception:
-                worker_proc_alive = False
-                worker_pid_str = "NONE"
-                worker_proc_str = "FAIL"
-                worker_loop_str = "FAIL"
-                worker_hb = "Never"
+                from core.sentinel_stats import get_user_sentinel_stats
+                sentinel_stats = get_user_sentinel_stats(
+                    user_id=current_user_id,
+                    mailbox_id=mailbox_rec.get("id") if mailbox_rec else None,
+                    client=user_client,
+                    checkpoint_rec=fresh_checkpoint_rec
+                )
 
-            diag_mb_id = f"{str(mailbox_rec.get('id', ''))[:8]}..." if mailbox_rec and mailbox_rec.get("id") else "N/A"
-            diag_worker_state = desired_state.upper() if desired_state in ("RUNNING", "STOPPED") else "STOPPED"
-            diag_lease_status = "ACTIVE" if (sentinel_status == "ACTIVE" and worker_proc_alive) else "LOST"
-            diag_last_poll = sentinel_stats.get("last_poll_time", "Waiting for first poll...")
-            diag_last_imap = sentinel_stats.get("last_successful_imap_poll", "Never")
-            diag_checkpoint_uid = sentinel_stats.get("last_processed_uid", 0)
-            diag_highest_uid = sentinel_stats.get("highest_observed_uid", 0)
-            diag_last_result = sentinel_stats.get("last_poll_result", "0 new messages")
-            diag_errors = sentinel_stats.get("processing_errors", 0)
-            diag_arrived = sentinel_stats.get("emails_arrived", 0)
-            diag_analysed = sentinel_stats.get("emails_analysed", 0)
+                # Section 16 Safe Diagnostics Block
+                try:
+                    from core.sentinel_stats import get_sentinel_worker_runtime
+                    worker_rt = get_sentinel_worker_runtime(worker_rec=fresh_worker_rec)
+                    worker_proc_alive = worker_rt.get("worker_process_alive", False)
+                    worker_pid = worker_rt.get("pid")
+                    worker_pid_str = str(worker_pid) if worker_pid else "NONE"
+                    worker_proc_str = "RUNNING" if worker_proc_alive else "FAIL"
+                    worker_loop_str = "ACTIVE" if worker_rt.get("worker_poll_loop_active") else "FAIL"
+                    worker_hb = worker_rt.get("worker_last_heartbeat", "Never")
+                except Exception:
+                    worker_proc_alive = False
+                    worker_pid_str = "NONE"
+                    worker_proc_str = "FAIL"
+                    worker_loop_str = "FAIL"
+                    worker_hb = "Never"
 
-            if sentinel_status == "ACTIVE" and not worker_proc_alive:
-                st.warning("⚠️ Worker process is not running. Click below to launch the independent worker process.")
-                if st.button("⚡ Start Worker", type="primary", key="btn_start_sentinel_worker_diag"):
-                    from core.sentinel_stats import start_sentinel_worker_daemon
-                    ok_start, msg_start, _ = start_sentinel_worker_daemon()
-                    if ok_start:
-                        st.success(msg_start)
-                        st.rerun()
-                    else:
-                        st.error(msg_start)
+                diag_mb_id = f"{str(mailbox_rec.get('id', ''))[:8]}..." if mailbox_rec and mailbox_rec.get("id") else "N/A"
+                diag_worker_state = desired_state.upper() if desired_state in ("RUNNING", "STOPPED") else "STOPPED"
+                diag_lease_status = "ACTIVE" if (sentinel_status == "ACTIVE" and worker_proc_alive) else "LOST"
+                diag_last_poll = sentinel_stats.get("last_poll_time", "Waiting for first poll...")
+                diag_last_imap = sentinel_stats.get("last_successful_imap_poll", "Never")
+                diag_checkpoint_uid = sentinel_stats.get("last_processed_uid", 0)
+                diag_highest_uid = sentinel_stats.get("highest_observed_uid", 0)
+                diag_last_result = sentinel_stats.get("last_poll_result", "0 new messages")
+                diag_errors = sentinel_stats.get("processing_errors", 0)
+                diag_arrived = sentinel_stats.get("emails_arrived", 0)
+                diag_analysed = sentinel_stats.get("emails_analysed", 0)
 
-            st.markdown("#### LIVE ACTIVITY")
-            recent_events = sentinel_stats.get("recent_events", [])
-            if recent_events:
-                for evt in recent_events[:5]:
-                    cat = evt.get("category", "Clean")
-                    if cat == "High Risk":
-                        st.error(f"🔴 **High Risk**  \nSubject: `{evt.get('subject', 'No Subject')}`  \nTime: {evt.get('time', 'N/A')}")
-                    elif cat == "Suspicious":
-                        st.warning(f"🟠 **Suspicious**  \nSubject: `{evt.get('subject', 'No Subject')}`  \nTime: {evt.get('time', 'N/A')}")
-                    else:
-                        st.success(f"🟢 **Clean**  \nSubject: `{evt.get('subject', 'No Subject')}`  \nTime: {evt.get('time', 'N/A')}")
-            else:
-                if not sentinel_stats["has_polled"] and sentinel_stats["emails_arrived"] == 0:
-                    st.info("ℹ️ **Waiting for first poll...** Initial sync establishes the checkpoint UID. Historical mailbox messages are skipped to inspect incoming arrivals only.")
+                if sentinel_status == "ACTIVE" and not worker_proc_alive:
+                    st.warning("⚠️ Worker process is not running. Click below to launch the independent worker process.")
+                    if st.button("⚡ Start Worker", type="primary", key="btn_start_sentinel_worker_diag"):
+                        from core.sentinel_stats import start_sentinel_worker_daemon
+                        ok_start, msg_start, _ = start_sentinel_worker_daemon()
+                        if ok_start:
+                            st.success(msg_start)
+                            st.rerun(scope="fragment")
+                        else:
+                            st.error(msg_start)
+
+                st.caption("🟢 Auto-refresh: ON (2s interval)")
+
+                st.markdown("#### LIVE ACTIVITY")
+                recent_events = sentinel_stats.get("recent_events", [])
+                if recent_events:
+                    for evt in recent_events[:5]:
+                        cat = evt.get("category", "Clean")
+                        if cat == "High Risk":
+                            st.error(f"🔴 **High Risk**  \nSubject: `{evt.get('subject', 'No Subject')}`  \nTime: {evt.get('time', 'N/A')}")
+                        elif cat == "Suspicious":
+                            st.warning(f"🟠 **Suspicious**  \nSubject: `{evt.get('subject', 'No Subject')}`  \nTime: {evt.get('time', 'N/A')}")
+                        else:
+                            st.success(f"🟢 **Clean**  \nSubject: `{evt.get('subject', 'No Subject')}`  \nTime: {evt.get('time', 'N/A')}")
                 else:
-                    st.caption("No new threat events in the latest poll cycle. Inbox is monitored continuously.")
+                    if not sentinel_stats["has_polled"] and sentinel_stats["emails_arrived"] == 0:
+                        st.info("ℹ️ **Waiting for first poll...** Initial sync establishes the checkpoint UID. Historical mailbox messages are skipped to inspect incoming arrivals only.")
+                    else:
+                        st.caption("No new threat events in the latest poll cycle. Inbox is monitored continuously.")
 
-            st.markdown("───────────────────────────────")
+                st.markdown("───────────────────────────────")
 
-            threats_count = sentinel_stats["suspicious"] + sentinel_stats["high_critical"]
-            st.markdown(
-                f"**{sentinel_stats['emails_arrived']}** Arrived · "
-                f"**{sentinel_stats['emails_analysed']}** Analysed · "
-                f"**{threats_count}** Threats"
-            )
+                threats_count = sentinel_stats["suspicious"] + sentinel_stats["high_critical"]
+                st.markdown(
+                    f"**{sentinel_stats['emails_arrived']}** Arrived · "
+                    f"**{sentinel_stats['emails_analysed']}** Analysed · "
+                    f"**{threats_count}** Threats"
+                )
 
-            p_col1, p_col2 = st.columns([2, 1])
-            with p_col1:
-                st.markdown(f"**Last Poll**  \n{sentinel_stats['last_poll_time']}")
-            with p_col2:
-                if st.button("🔄 Refresh Telemetry", key="btn_refresh_sentinel_telemetry", use_container_width=True):
-                    st.rerun()
+                p_col1, p_col2 = st.columns([2, 1])
+                with p_col1:
+                    st.markdown(f"**Last Poll**  \n{sentinel_stats['last_poll_time']}")
+                with p_col2:
+                    if st.button("🔄 Refresh Telemetry", key="btn_refresh_sentinel_telemetry", use_container_width=True, help="Optional manual refresh"):
+                        st.rerun(scope="fragment")
 
-            with st.expander("⚙️ Diagnostics", expanded=False):
-                diag_c1, diag_c2, diag_c3, diag_c4 = st.columns(4)
-                with diag_c1:
-                    st.text(f"Worker Process: {worker_proc_str}")
-                    st.text(f"Worker PID: {worker_pid_str}")
-                    st.text(f"Poll Loop: {worker_loop_str}")
-                    st.text("Polling Interval: 1s")
-                    st.text(f"Heartbeat: {worker_hb}")
-                with diag_c2:
-                    st.text(f"Worker State: {diag_worker_state}")
-                    st.text(f"Mailbox: {masked_email}")
-                    st.text(f"Mailbox ID: {diag_mb_id}")
-                    st.text(f"Lease: {diag_lease_status}")
-                with diag_c3:
-                    st.text(f"Checkpoint UID: {diag_checkpoint_uid}")
-                    st.text(f"Highest UID: {diag_highest_uid}")
-                    st.text(f"Last Poll: {diag_last_poll}")
-                    st.text(f"Last IMAP: {diag_last_imap}")
-                with diag_c4:
-                    st.text(f"Last Result: {diag_last_result}")
-                    st.text(f"Poll Errors: {diag_errors}")
-                    st.text(f"Emails Arrived: {diag_arrived}")
-                    st.text(f"Emails Analysed: {diag_analysed}")
+                with st.expander("⚙️ Diagnostics", expanded=False):
+                    diag_c1, diag_c2, diag_c3, diag_c4 = st.columns(4)
+                    with diag_c1:
+                        st.text(f"Worker Process: {worker_proc_str}")
+                        st.text(f"Worker PID: {worker_pid_str}")
+                        st.text(f"Poll Loop: {worker_loop_str}")
+                        st.text("Polling Interval: 1s")
+                        st.text(f"Heartbeat: {worker_hb}")
+                    with diag_c2:
+                        st.text(f"Worker State: {diag_worker_state}")
+                        st.text(f"Mailbox: {masked_email}")
+                        st.text(f"Mailbox ID: {diag_mb_id}")
+                        st.text(f"Lease: {diag_lease_status}")
+                    with diag_c3:
+                        st.text(f"Checkpoint UID: {diag_checkpoint_uid}")
+                        st.text(f"Highest UID: {diag_highest_uid}")
+                        st.text(f"Last Poll: {diag_last_poll}")
+                        st.text(f"Last IMAP: {diag_last_imap}")
+                    with diag_c4:
+                        st.text(f"Last Result: {diag_last_result}")
+                        st.text(f"Poll Errors: {diag_errors}")
+                        st.text(f"Emails Arrived: {diag_arrived}")
+                        st.text(f"Emails Analysed: {diag_analysed}")
+
+            render_live_activity_tab()
 
         with tab_alerts:
             st.markdown("### 📱 Mobile Alerts")

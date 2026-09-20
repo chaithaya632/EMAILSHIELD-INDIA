@@ -578,23 +578,24 @@ class LocalWorkerDBClient(MockWorkerDBClient):
         with self._lock:
             worker = self.workers.get(w_id)
             if worker and worker.get("lease_expires_at") and worker.get("lease_expires_at") >= time.time():
-                # Check if the process that previously held or registered the worker is dead
-                runtime_path = os.path.join(
-                    os.path.dirname(os.path.dirname(__file__)),
-                    "data", "local", "sentinel_worker_runtime.json"
-                )
-                if os.path.exists(runtime_path):
-                    try:
-                        with open(runtime_path, "r", encoding="utf-8") as rf:
-                            rdata = json.load(rf)
-                        rpid = rdata.get("pid")
-                        from worker.health import is_pid_alive
-                        if not rpid or not is_pid_alive(rpid) or rpid == os.getpid():
-                            worker["lease_owner"] = None
-                            worker["lease_expires_at"] = None
-                            worker["lease_token_hash"] = None
-                    except Exception:
-                        pass
+                if self.db_path == self.LOCAL_DB_FILE:
+                    # Check if the process that previously held or registered the worker is dead
+                    runtime_path = os.path.join(
+                        os.path.dirname(os.path.dirname(__file__)),
+                        "data", "local", "sentinel_worker_runtime.json"
+                    )
+                    if os.path.exists(runtime_path):
+                        try:
+                            with open(runtime_path, "r", encoding="utf-8") as rf:
+                                rdata = json.load(rf)
+                            rpid = rdata.get("pid")
+                            from worker.health import is_pid_alive
+                            if rpid and not is_pid_alive(rpid):
+                                worker["lease_owner"] = None
+                                worker["lease_expires_at"] = None
+                                worker["lease_token_hash"] = None
+                        except Exception:
+                            pass
         result = super().claim_worker_lease(worker_id, duration_seconds)
         if result and result.get("success"):
             self._save_to_disk()
