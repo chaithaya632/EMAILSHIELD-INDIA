@@ -163,22 +163,25 @@ class _TenantStatsRegistry:
         try:
             path = _get_telemetry_file_path(user_id, mailbox_id)
             if not os.path.exists(path) and os.path.isdir(TELEMETRY_DIR) and user_id:
-                h_u = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
-                candidates = [
-                    os.path.join(TELEMETRY_DIR, f)
-                    for f in os.listdir(TELEMETRY_DIR)
-                    if f.startswith(f"telemetry_{h_u}_") and f.endswith(".json")
-                ]
-                if candidates:
-                    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-                    path = candidates[0]
+                # Only check fallback candidates if mailbox_id was not explicitly specified
+                if not mailbox_id or mailbox_id in ("default_mailbox", "none"):
+                    h_u = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
+                    candidates = [
+                        os.path.join(TELEMETRY_DIR, f)
+                        for f in os.listdir(TELEMETRY_DIR)
+                        if f.startswith(f"telemetry_{h_u}_") and f.endswith(".json")
+                    ]
+                    if candidates:
+                        candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                        path = candidates[0]
 
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                loaded_mb_id = mailbox_id if (mailbox_id and mailbox_id not in ("default_mailbox", "none")) else data.get("mailbox_id", mailbox_id)
                 return TenantSentinelMetrics(
                     user_id=data.get("user_id", user_id),
-                    mailbox_id=data.get("mailbox_id", mailbox_id),
+                    mailbox_id=loaded_mb_id,
                     folder_name=data.get("folder_name", "INBOX"),
                     has_polled=data.get("has_polled", False),
                     last_poll_time_str=data.get("last_poll_time_str"),

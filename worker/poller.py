@@ -159,7 +159,7 @@ class MailboxPoller:
                     logger.error("Failed to select folder %s for mailbox %s", folder_name, mailbox_id)
                     return {"status": "FOLDER_NOT_FOUND", "mailbox_id": mailbox_id, "processed_count": 0, "events": []}
 
-                # 6. Checkpoint inspection
+                # 6. Checkpoint inspection & UIDVALIDITY verification
                 cp = self.checkpoint_store.get_checkpoint(
                     user_id=tenant_user_id,
                     worker_id=str(self.identity.worker_id),
@@ -170,6 +170,28 @@ class MailboxPoller:
                     self.checkpoint_store.seed_from_telemetry(
                         tenant_user_id, str(self.identity.worker_id), mailbox_id, folder_name
                     )
+
+                # Check UIDVALIDITY stability across polls
+                conn_uid_validity = getattr(conn, "get_uid_validity", lambda: 1)()
+                if cp.has_polled and cp.uid_validity != conn_uid_validity:
+                    logger.warning(
+                        "Mailbox %s: IMAP UIDVALIDITY changed from %d to %d. Re-establishing baseline to avoid reprocessing.",
+                        mailbox_id, cp.uid_validity, conn_uid_validity
+                    )
+                    all_uids_on_reset = conn.search(since_uid=0)
+                    highest_baseline = max(all_uids_on_reset) if all_uids_on_reset else 0
+                    cp.uid_validity = conn_uid_validity
+                    cp.last_processed_uid = highest_baseline
+                    self.checkpoint_store.advance_checkpoint(
+                        user_id=tenant_user_id,
+                        worker_id=str(self.identity.worker_id),
+                        mailbox_id=mailbox_id,
+                        uid=highest_baseline,
+                        folder_name=folder_name
+                    )
+                elif not cp.has_polled:
+                    cp.uid_validity = conn_uid_validity
+
                 last_uid = cp.last_processed_uid
 
                 # 7. Search unseen UIDs
@@ -266,21 +288,32 @@ class MailboxPoller:
                 highest_uid = last_uid
 
                 for uid in uids_to_process:
-                    # Critical: Mid-poll lease check
-                    if not self.lease_manager.is_active():
-                        logger.warning("Lease expired during active polling of mailbox %s. Aborting further processing.", mailbox_id)
-                        return {
-                            "status": "LEASE_EXPIRED_MID_POLL",
-                            "mailbox_id": mailbox_id,
-                            "processed_count": len(events),
-                            "events": events
-                        }
+                    # Critical: Proactive mid-poll lease renewal while still active
+                    if self.lease_manager is not None:
+                        remaining_time = self.lease_manager.time_until_expiry()
+                        renewal_threshold = getattr(self.config, "renewal_interval_seconds", 30)
+                        renewal_ext = getattr(self.config, "renewal_extension_seconds", 120)
+                        if self.lease_manager.is_active() and remaining_time < renewal_threshold:
+                            logger.info(
+                                "Renewing worker lease mid-poll (remaining: %ds, threshold: %ds)...",
+                                int(remaining_time), renewal_threshold
+                            )
+                            self.lease_manager.renew_lease(renewal_ext)
+
+                        if not self.lease_manager.is_active():
+                            logger.warning("Lease expired during active polling of mailbox %s. Aborting further processing.", mailbox_id)
+                            return {
+                                "status": "LEASE_EXPIRED_MID_POLL",
+                                "mailbox_id": mailbox_id,
+                                "processed_count": len(events),
+                                "events": events
+                            }
 
                     # Fetch message
                     fetched = conn.fetch(uid)
 
                     # Critical: Mid-poll lease check after fetch (before processing or checkpointing)
-                    if not self.lease_manager.is_active():
+                    if self.lease_manager is not None and not self.lease_manager.is_active():
                         logger.warning("Lease expired during active polling of mailbox %s (post-fetch). Aborting further processing.", mailbox_id)
                         return {
                             "status": "LEASE_EXPIRED_MID_POLL",
@@ -559,16 +592,6 @@ class MailboxPoller:
                         last_successful_imap_poll=poll_time_now,
                         last_poll_result=poll_result_str,
                         recent_events=poll_recent_events,
-                    )
-                except Exception:
-                    pass
-
-                try:
-                    from core.sentinel_stats import _get_telemetry_file_path
-                    telemetry_path = _get_telemetry_file_path(tenant_user_id, mailbox_id)
-                    logger.info(
-                        "SAFE_DIAG_BOUNDARY_2: persisting telemetry emails_arrived=%d, emails_analysed=%d, last_uid=%d, path=%s",
-                        poll_arrived, poll_analysed, highest_uid, telemetry_path
                     )
                 except Exception:
                     pass

@@ -643,6 +643,12 @@ class LocalWorkerDBClient(MockWorkerDBClient):
                     mailbox_id = m_id
                     break
             if not mailbox_id:
+                # Also check by (user_id, email_address)
+                for m_id, m in client.mailboxes.items():
+                    if m.get("user_id") == str(user_id) and m.get("email_address") == email_address:
+                        mailbox_id = m_id
+                        break
+            if not mailbox_id:
                 mailbox_id = str(uuid.uuid4())
 
         now = time.time()
@@ -653,6 +659,11 @@ class LocalWorkerDBClient(MockWorkerDBClient):
             actual_state="STOPPED"
         )
         with client._lock:
+            # Deactivate any previous mailboxes for this user to maintain single active mailbox invariant
+            for m_id, m in client.mailboxes.items():
+                if m.get("user_id") == str(user_id) and m_id != mailbox_id:
+                    m["is_active"] = False
+                    m["updated_at"] = now
             client.mailboxes[mailbox_id] = {
                 "id": mailbox_id,
                 "worker_id": str(worker_id),

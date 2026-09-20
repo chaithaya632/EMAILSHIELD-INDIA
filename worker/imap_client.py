@@ -99,6 +99,9 @@ class IMAPConnectionProtocol(Protocol):
     def select(self, mailbox_name: str = "INBOX") -> Tuple[str, int]:
         ...
 
+    def get_uid_validity(self) -> int:
+        ...
+
     def search(self, since_uid: Optional[int] = None) -> List[int]:
         ...
 
@@ -465,6 +468,7 @@ class RealIMAPConnection:
         self._logged_in_user: Optional[str] = None
         self._selected_folder: Optional[str] = None
         self._is_connected: bool = False
+        self._uid_validity: int = 1
 
     def connect(self) -> None:
         """Establishes IMAP connection with TLS verification and timeout enforcement."""
@@ -566,12 +570,25 @@ class RealIMAPConnection:
                 except (ValueError, TypeError):
                     count = 0
 
+            # Safely extract UIDVALIDITY from IMAP server response
+            try:
+                uv_resp = self._imap.response("UIDVALIDITY")
+                if uv_resp and len(uv_resp) > 1 and uv_resp[1] and uv_resp[1][0]:
+                    raw_uv = uv_resp[1][0]
+                    self._uid_validity = int(raw_uv.decode() if isinstance(raw_uv, bytes) else raw_uv)
+            except Exception as uv_err:
+                logger.debug("Could not parse UIDVALIDITY response: %s", uv_err)
+
             self._selected_folder = clean_folder
-            logger.info("Selected folder '%s' with %d messages.", clean_folder, count)
+            logger.info("Selected folder '%s' with %d messages (UIDVALIDITY: %d).", clean_folder, count, self._uid_validity)
             return "OK", count
         except Exception as err:
             logger.error("Error selecting folder '%s': %s", clean_folder, err)
             raise IMAPClientError(f"Error selecting folder '{clean_folder}': {err}") from err
+
+    def get_uid_validity(self) -> int:
+        """Returns the UIDVALIDITY value for the currently selected folder."""
+        return self._uid_validity
 
     def search(self, since_uid: Optional[int] = None) -> List[int]:
         """

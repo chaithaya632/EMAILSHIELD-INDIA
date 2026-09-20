@@ -186,15 +186,33 @@ def get_user_mailbox(user_id: str, client: Any) -> Optional[Dict[str, Any]]:
     if client:
         try:
             # Prefer the safe view that explicitly omits encrypted_credentials
-            res = client.table("sentinel_mailboxes_safe").select("*").eq("user_id", user_id).execute()
+            query = client.table("sentinel_mailboxes_safe").select("*").eq("user_id", user_id)
+            if hasattr(query, "order"):
+                try:
+                    query = query.order("updated_at", desc=True)
+                except Exception:
+                    pass
+            res = query.execute()
             if res and res.data:
+                for m in res.data:
+                    if m.get("is_active"):
+                        return m
                 return res.data[0]
         except Exception:
             # Fallback query specifying safe columns only
             try:
                 safe_cols = "id,user_id,worker_id,created_at,updated_at,provider,email_address,imap_host,imap_port,use_ssl,auth_mechanism,is_active"
-                res = client.table("sentinel_mailboxes").select(safe_cols).eq("user_id", user_id).execute()
+                query = client.table("sentinel_mailboxes").select(safe_cols).eq("user_id", user_id)
+                if hasattr(query, "order"):
+                    try:
+                        query = query.order("updated_at", desc=True)
+                    except Exception:
+                        pass
+                res = query.execute()
                 if res and res.data:
+                    for m in res.data:
+                        if m.get("is_active"):
+                            return m
                     return res.data[0]
             except Exception:
                 pass
@@ -214,12 +232,16 @@ def get_user_mailbox(user_id: str, client: Any) -> Optional[Dict[str, Any]]:
             from worker.db import LocalWorkerDBClient
             loc = LocalWorkerDBClient()
             loc._load_from_disk()
+            active_mboxes = []
             for m_id, m in loc.mailboxes.items():
                 if m.get("user_id") == str(user_id) and m.get("is_active"):
                     safe_m = dict(m)
                     safe_m.pop("encrypted_credentials", None)
                     safe_m["id"] = m_id
-                    return safe_m
+                    active_mboxes.append(safe_m)
+            if active_mboxes:
+                active_mboxes.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
+                return active_mboxes[0]
         except Exception:
             pass
     return None

@@ -180,6 +180,10 @@ class SyntheticIMAPConnection:
         self._selected_mailbox = mb
         return "OK", mb.count()
 
+    def get_uid_validity(self) -> int:
+        """Returns the UIDVALIDITY for the currently selected mailbox folder."""
+        return getattr(self._selected_mailbox, "uid_validity", 1) if self._selected_mailbox else 1
+
     def search(self, since_uid: Optional[int] = None) -> List[int]:
         """Returns ascending list of unseen message UIDs in the selected mailbox."""
         if not self._selected_mailbox:
