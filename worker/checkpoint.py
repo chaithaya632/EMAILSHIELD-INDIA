@@ -197,6 +197,7 @@ class CheckpointStore:
             cp = self.get_checkpoint(user_id, worker_id, mailbox_id, folder_name)
             cp.has_polled = True
             cp.last_poll_time_str = poll_time_str or time.strftime("%H:%M:%S")
+            cp.last_scan_timestamp = time.time()
             if last_uid is not None and last_uid > cp.last_processed_uid:
                 cp.last_processed_uid = last_uid
 

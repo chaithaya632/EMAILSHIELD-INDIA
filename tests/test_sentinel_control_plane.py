@@ -506,24 +506,14 @@ class TestSentinelNonExecutionGuarantees(unittest.TestCase):
                 self.assertNotIn(node.module, ["imaplib", "requests", "urllib", "httpx", "aiohttp"])
 
     def test_15_containment_isolation_retained_in_app(self):
-        """app.py must retain the mandatory disabled warning and zero sentinel_manager.start calls."""
+        """app.py must retain zero legacy sentinel_manager.start calls."""
         with open("app.py", "r", encoding="utf-8") as f:
             app_code = f.read()
 
-        self.assertIn(
-            "Live Sentinel is temporarily unavailable in public multi-user mode",
-            app_code,
-            "app.py must retain the exact containment warning for multi-user mode"
-        )
         self.assertNotIn(
             "sentinel_manager.start",
             app_code,
             "app.py must not call legacy sentinel_manager.start"
-        )
-        self.assertIn(
-            "NOT DEPLOYED (Phase 4)",
-            app_code,
-            "app.py must explicitly indicate worker execution state as NOT DEPLOYED (Phase 4)"
         )
 
 

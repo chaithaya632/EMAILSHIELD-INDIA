@@ -245,11 +245,14 @@ def generate_pdf_report(case_data: Dict[str, Any], filepath: Any = None, output_
     # SECTION 3: Cryptographic Authentication & RFC 7489 Alignment
     elements.append(Paragraph("1. Authentication Analysis & RFC 7489 Alignment:", heading2_style))
     auth = clean_case.get("auth_alignment") or {}
+    spf_align_text = "Aligned" if auth.get("spf_aligned") else ("Not determinable" if not auth.get("envelope_from_domain") else "Unaligned")
+    dkim_align_text = "Aligned" if auth.get("dkim_aligned") else ("Not determinable" if not auth.get("dkim_signing_domain") else "Unaligned")
+    dmarc_align_text = "Enforced" if "PASS" in str(auth.get("effective_dmarc")) else ("Not determinable" if "NONE" in str(auth.get("effective_dmarc")) or "UNCONFIGURED" in str(auth.get("effective_dmarc")) else "Failed/Bypassed")
     auth_data = [
         ["Mechanism", "Result", "Alignment Status", "Technical Details"],
-        ["SPF (Sender Policy)", safe_text(auth.get("spf_result", "NONE")), "Aligned" if auth.get("spf_aligned") else "Unaligned", f"Envelope-From: {safe_text(auth.get('envelope_from_domain', 'N/A'))}"],
-        ["DKIM (Signature)", safe_text(auth.get("dkim_result", "NONE")), "Aligned" if auth.get("dkim_aligned") else "Unaligned", f"Signing Domain (d=): {safe_text(auth.get('dkim_signing_domain', 'N/A'))}"],
-        ["DMARC (Effective)", safe_text(auth.get("effective_dmarc", "NONE")), "Enforced" if "PASS" in str(auth.get("effective_dmarc")) else "Failed/Bypassed", safe_text(auth.get("dmarc_reason", "N/A"), 80)],
+        ["SPF (Sender Policy)", safe_text(auth.get("spf_result", "NONE")), spf_align_text, f"Envelope-From: {safe_text(auth.get('envelope_from_domain', 'N/A'))}"],
+        ["DKIM (Signature)", safe_text(auth.get("dkim_result", "NONE")), dkim_align_text, f"Signing Domain (d=): {safe_text(auth.get('dkim_signing_domain', 'N/A'))}"],
+        ["DMARC (Effective)", safe_text(auth.get("effective_dmarc", "NONE")), dmarc_align_text, safe_text(auth.get("dmarc_reason", "N/A"), 80)],
     ]
     a_table = Table(auth_data, colWidths=[90, 80, 90, 280])
     a_table.setStyle(TableStyle([
@@ -470,6 +473,117 @@ def generate_pdf_report(case_data: Dict[str, Any], filepath: Any = None, output_
     elements.append(Paragraph(disclaimer, ParagraphStyle("Legal", parent=styles["Normal"], fontSize=7, leading=9, textColor=colors.HexColor("#64748b"))))
 
     doc.build(elements)
+    if hasattr(target, "seek"):
+        target.seek(0)
+    return target
+
+
+def generate_batch_pdf_report(metrics: Dict[str, Any], results: List[Dict[str, Any]], filepath: Any = None, output_path: Any = None) -> Any:
+    """
+    Generates a professional Batch Forensic Analysis Summary PDF report.
+    Compatible with file paths, streams, or returning bytes if target is io.BytesIO.
+    """
+    target = output_path if output_path is not None else filepath
+    return_bytes = False
+    if target is None:
+        target = io.BytesIO()
+        return_bytes = True
+    elif isinstance(target, str):
+        target = open(target, "wb")
+
+    doc = SimpleDocTemplate(target, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle("BTitle", parent=styles["Title"], fontSize=16, leading=20, textColor=colors.HexColor("#0f172a"))
+    subtitle_style = ParagraphStyle("BSub", parent=styles["Normal"], fontSize=9, leading=12, textColor=colors.HexColor("#475569"))
+    h2_style = ParagraphStyle("BH2", parent=styles["Heading2"], fontSize=11, leading=15, textColor=colors.HexColor("#1e293b"), spaceBefore=8, spaceAfter=4)
+    body_style = ParagraphStyle("BBody", parent=styles["Normal"], fontSize=8.5, leading=11, textColor=colors.HexColor("#334155"))
+    table_hdr_style = ParagraphStyle("BTHdr", parent=styles["Normal"], fontSize=8, leading=10, textColor=colors.whitesmoke, fontName="Helvetica-Bold")
+    table_cell_style = ParagraphStyle("BTCell", parent=styles["Normal"], fontSize=7.5, leading=9.5, textColor=colors.HexColor("#1e293b"))
+
+    elements = []
+    now_str = datetime.datetime.now().strftime("%d-%b-%Y %I:%M:%S %p")
+    elements.append(Paragraph("EMAILSHIELD INDIA — BATCH FORENSIC REPORT", title_style))
+    elements.append(Paragraph(f"Bulk Threat & Email Ingestion Analysis Summary | Generated: {now_str}", subtitle_style))
+    elements.append(Spacer(1, 4))
+    elements.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#0284c7"), spaceBefore=2, spaceAfter=6))
+
+    # Metrics Summary Table
+    m_data = [
+        [
+            Paragraph("<b>Processed</b>", table_hdr_style),
+            Paragraph("<b>Clean</b>", table_hdr_style),
+            Paragraph("<b>Suspicious</b>", table_hdr_style),
+            Paragraph("<b>High Risk</b>", table_hdr_style),
+            Paragraph("<b>Critical</b>", table_hdr_style),
+            Paragraph("<b>Errors</b>", table_hdr_style),
+        ],
+        [
+            Paragraph(str(metrics.get("Processed", 0)), table_cell_style),
+            Paragraph(str(metrics.get("Clean", 0)), table_cell_style),
+            Paragraph(str(metrics.get("Suspicious", 0)), table_cell_style),
+            Paragraph(str(metrics.get("High Risk", 0)), table_cell_style),
+            Paragraph(str(metrics.get("Critical", 0)), table_cell_style),
+            Paragraph(str(metrics.get("Errors", 0)), table_cell_style),
+        ]
+    ]
+    m_table = Table(m_data, colWidths=[90, 90, 90, 90, 90, 90])
+    m_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#f8fafc")),
+        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#cbd5e1")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("PADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(m_table)
+    elements.append(Spacer(1, 10))
+
+    # Detailed Findings Table
+    elements.append(Paragraph("Batch Email Forensic Findings:", h2_style))
+    r_data = [
+        [
+            Paragraph("<b>Filename</b>", table_hdr_style),
+            Paragraph("<b>Sender</b>", table_hdr_style),
+            Paragraph("<b>Subject</b>", table_hdr_style),
+            Paragraph("<b>Risk Verdict</b>", table_hdr_style),
+            Paragraph("<b>IOCs</b>", table_hdr_style),
+            Paragraph("<b>Atts</b>", table_hdr_style),
+        ]
+    ]
+    for r in results:
+        risk_color = "#10b981" if r.get("Risk") == "LOW" else "#f59e0b" if r.get("Risk") == "SUSPICIOUS" else "#ef4444"
+        r_verdict_style = ParagraphStyle(f"RV_{id(r)}", parent=table_cell_style, textColor=colors.HexColor(risk_color), fontName="Helvetica-Bold")
+        r_data.append([
+            Paragraph(safe_text(r.get("Filename", ""), 25), table_cell_style),
+            Paragraph(safe_text(r.get("Sender", ""), 25), table_cell_style),
+            Paragraph(safe_text(r.get("Subject", ""), 30), table_cell_style),
+            Paragraph(str(r.get("Risk", "")), r_verdict_style),
+            Paragraph(str(r.get("IOCs", 0)), table_cell_style),
+            Paragraph(str(r.get("Attachments", 0)), table_cell_style),
+        ])
+
+    r_table = Table(r_data, colWidths=[110, 110, 150, 70, 50, 50])
+    r_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#cbd5e1")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("PADDING", (0, 0), (-1, -1), 3),
+    ]))
+    elements.append(r_table)
+    elements.append(Spacer(1, 10))
+
+    elements.append(Paragraph(
+        "<i>* Security Disclaimer: Batch analysis runs purely in-memory under strict session isolation. "
+        "No email data or telemetry is committed to permanent Sentinel stores during batch operations.</i>",
+        body_style
+    ))
+
+    doc.build(elements)
+    if return_bytes:
+        return target.getvalue()
     if hasattr(target, "seek"):
         target.seek(0)
     return target

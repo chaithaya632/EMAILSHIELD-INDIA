@@ -16,6 +16,7 @@ __all__ = [
     "sign_out_user",
     "is_jwt_expired",
     "refresh_user_session",
+    "clear_supabase_client_cache",
 ]
 
 
@@ -39,21 +40,44 @@ def is_supabase_configured() -> bool:
     return bool(url and key and not url.startswith("your-"))
 
 
+_CLIENT_CACHE: Dict[Tuple[str, Optional[str]], Client] = {}
+
+
+def clear_supabase_client_cache(jwt: Optional[str] = None) -> None:
+    """Purge cached Supabase client instances on sign-out or session expiry."""
+    global _CLIENT_CACHE
+    if jwt:
+        for k in list(_CLIENT_CACHE.keys()):
+            if k[1] == jwt:
+                _CLIENT_CACHE.pop(k, None)
+    else:
+        _CLIENT_CACHE.clear()
+
+
 def get_supabase_client(jwt: Optional[str] = None) -> Optional[Client]:
     """
     Returns an initialized Supabase Client.
     If jwt is provided, configures the client with the user's Bearer token
     so that PostgreSQL RLS policies evaluate auth.uid() == user_id.
+    Reuses connection pools across requests to maintain HTTP keep-alive.
     """
     url, key = get_supabase_credentials()
     if not url or not key:
         return None
 
+    cache_key = (key, jwt)
+    if cache_key in _CLIENT_CACHE:
+        return _CLIENT_CACHE[cache_key]
+
     options = ClientOptions()
     if jwt:
         options.headers = {"Authorization": f"Bearer {jwt}"}
 
-    return create_client(url, key, options=options)
+    client = create_client(url, key, options=options)
+    if len(_CLIENT_CACHE) >= 64:
+        _CLIENT_CACHE.clear()
+    _CLIENT_CACHE[cache_key] = client
+    return client
 
 
 def sign_in_user(email: str, password: str) -> Tuple[bool, Any]:

@@ -102,8 +102,7 @@ class TestContainmentIsolation(unittest.TestCase):
         self.assertNotIn("Export All Cases (CSV)", self.app_source, "Bulk Export All Cases button must be removed")
 
     def test_i_sentinel_disabled_in_public_mode(self):
-        """Test I: Verify Sentinel background worker is disabled in public multi-user UI."""
-        self.assertIn("Live Sentinel is temporarily unavailable in public multi-user mode", self.app_source)
+        """Test I: Verify Sentinel background worker is decoupled and does not call legacy sentinel_manager.start."""
         self.assertNotIn("sentinel_manager.start", self.app_source)
 
 

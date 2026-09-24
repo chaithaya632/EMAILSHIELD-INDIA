@@ -40,8 +40,11 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const res = await fetch(normalizedPath, {
     credentials: 'include',
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
+      'Pragma': 'no-cache',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
       ...options?.headers,
     },
     ...options,
@@ -302,6 +305,58 @@ export async function fetchLiveMailTelemetry(): Promise<LiveMailTelemetry> {
     last_poll: isConnected ? (t.last_poll || 'Never') : 'Never',
     worker_status: workerStatus,
   };
+}
+
+export async function fetchLiveMailFeed(limit = 50): Promise<{
+  telemetry: LiveMailTelemetry;
+  emails: EmailSummary[];
+}> {
+  const raw = await apiFetch<any>(`/api/live-mail?limit=${limit}`);
+  const isConnected = raw?.connected === true && raw?.state !== 'NO_MAILBOX';
+  const state = raw?.state || (isConnected ? 'ACTIVE' : 'NO_MAILBOX');
+  const t = raw?.telemetry || {};
+  const worker = raw?.worker || {};
+
+  let workerStatus: WorkerStatus = 'offline';
+  if (!isConnected) {
+    workerStatus = 'offline';
+  } else if (state === 'WORKER_ERROR') {
+    workerStatus = 'error';
+  } else if (state === 'ACTIVE') {
+    workerStatus = 'monitoring';
+  } else if (state === 'CONNECTED') {
+    workerStatus = 'connected';
+  } else {
+    workerStatus = normalizeWorkerStatus(worker.desired_state);
+  }
+
+  const telemetry: LiveMailTelemetry = {
+    connected: isConnected,
+    state,
+    mailbox: raw?.mailbox || null,
+    emails_arrived: isConnected ? (t.emails_arrived || 0) : 0,
+    emails_analysed: isConnected ? (t.emails_analysed || 0) : 0,
+    threats_detected: isConnected ? (t.threats_detected || 0) : 0,
+    high_critical: isConnected ? (t.high_critical || 0) : 0,
+    duplicates: isConnected ? (t.duplicates || 0) : 0,
+    processing_errors: isConnected ? (t.processing_errors || 0) : 0,
+    last_uid: isConnected ? (t.last_uid || 0) : 0,
+    last_poll: isConnected ? (t.last_poll || 'Never') : 'Never',
+    worker_status: workerStatus,
+  };
+
+  const messages = raw?.messages || [];
+  const emails: EmailSummary[] = messages.map((m: any) => ({
+    uid: String(m.message_uid || m.id),
+    sender: m.sender || 'Unknown Sender',
+    subject: m.subject || 'Live Message',
+    date: m.created_at || new Date().toISOString(),
+    risk_status: normalizeSeverity(m.risk_band),
+    analysis_state: m.risk_band ? 'completed' : 'pending',
+    message_id: String(m.id),
+  }));
+
+  return { telemetry, emails };
 }
 
 export async function fetchMailboxStatus(): Promise<{

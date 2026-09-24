@@ -385,6 +385,45 @@ class WorkerService:
         return self.health_monitor.get_status()
 
     @classmethod
+    def poll_once(cls, config: Optional[WorkerConfig] = None) -> dict:
+        """Execute exactly one poll cycle and exit.
+
+        Designed for scheduled/ephemeral invocation (e.g. cron, Cloud Run Jobs).
+        Uses the same config, credential, IMAP, forensic, and checkpoint logic
+        as the persistent worker — no code duplication.
+
+        Returns:
+            dict with 'status' and 'step_result' keys.
+        """
+        if config is None:
+            config = WorkerConfig.from_env()
+
+        if config.worker_id is None:
+            proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            wid_path = os.path.join(proj_root, "data", "local", "sentinel_worker_id.txt")
+            if os.path.exists(wid_path):
+                try:
+                    with open(wid_path, "r", encoding="utf-8") as f:
+                        wid_str = f.read().strip()
+                    if wid_str:
+                        config.worker_id = uuid.UUID(wid_str)
+                except Exception:
+                    pass
+            if config.worker_id is None:
+                config.worker_id = uuid.uuid4()
+
+        service = cls(config=config)
+        service.start()
+        try:
+            result = service.step()
+            return {"status": "completed", "step_result": result}
+        except Exception as err:
+            logger.error("poll_once encountered error: %s", err)
+            return {"status": "error", "error": str(err)}
+        finally:
+            service.stop()
+
+    @classmethod
     def run_cli(cls) -> None:
         """CLI entrypoint for running the worker service."""
         try:
@@ -417,6 +456,11 @@ class WorkerService:
                                 f.write(str(new_wid))
                         except Exception:
                             pass
+            if "--once" in sys.argv:
+                res = cls.poll_once(config)
+                print(json.dumps(res))
+                return
+
             service = cls(config)
             service.run()
         except KeyboardInterrupt:

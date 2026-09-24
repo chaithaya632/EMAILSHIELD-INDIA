@@ -13,6 +13,8 @@
  */
 
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
 const DEFAULT_KEY_VERSION = "k1";
 const CONTEXT_MAILBOX = "sentinel_mailbox_credentials";
@@ -86,4 +88,116 @@ export function encryptMailboxCredentialAsymmetric(
   const b64Ciphertext = toBase64Url(ciphertext);
 
   return `v2:${keyVersion}:${b64WrappedDek}:${b64Nonce}:${b64Ciphertext}`;
+}
+
+function fromBase64Url(str: string): Buffer {
+  let base64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  const padLength = 4 - (base64.length % 4);
+  if (padLength !== 4) {
+    base64 += "=".repeat(padLength);
+  }
+  return Buffer.from(base64, "base64");
+}
+
+export function resolveWorkerPrivateKey(): string {
+  let key = process.env.SENTINEL_WORKER_PRIVATE_KEY?.trim();
+  if (key) {
+    if (key.includes("\\n")) {
+      key = key.replace(/\\n/g, "\n");
+    }
+    if (
+      (key.startsWith('"') && key.endsWith('"')) ||
+      (key.startsWith("'") && key.endsWith("'"))
+    ) {
+      key = key.slice(1, -1);
+    }
+    return key;
+  }
+
+  // Fallback for local development environments
+  try {
+    const candidates = [
+      path.join(process.cwd(), "data", "local", "sentinel_worker_private.pem"),
+      path.join(process.cwd(), "..", "data", "local", "sentinel_worker_private.pem"),
+      path.resolve(__dirname, "../../../data/local/sentinel_worker_private.pem"),
+    ];
+    for (const cand of candidates) {
+      if (fs.existsSync(cand)) {
+        return fs.readFileSync(cand, "utf-8").trim();
+      }
+    }
+  } catch {
+    // Non-filesystem or restricted environment
+  }
+
+  throw new Error("SENTINEL_WORKER_PRIVATE_KEY environment variable is not set.");
+}
+
+export function decryptMailboxCredentialAsymmetric(
+  envelope: string,
+  userId: string
+): string {
+  if (!envelope || typeof envelope !== "string") {
+    throw new Error("Envelope is required.");
+  }
+  if (!userId || typeof userId !== "string") {
+    throw new Error("user_id is required for AAD tenant binding.");
+  }
+
+  const privateKeyPem = resolveWorkerPrivateKey();
+
+  const parts = envelope.split(":");
+  if (parts.length !== 5) {
+    throw new Error("Invalid envelope format.");
+  }
+
+  const [version, keyVersion, b64WrappedDek, b64Nonce, b64Ciphertext] = parts;
+
+  if (version !== "v2") {
+    throw new Error(`Unsupported envelope version: ${version}`);
+  }
+
+  try {
+    const wrappedDek = fromBase64Url(b64WrappedDek);
+    const nonce = fromBase64Url(b64Nonce);
+    const ciphertextWithTag = fromBase64Url(b64Ciphertext);
+
+    // 1. Unwrap DEK using Worker RSA Private Key with RSA-OAEP (SHA-256)
+    const dek = crypto.privateDecrypt(
+      {
+        key: privateKeyPem,
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: "sha256",
+      },
+      wrappedDek
+    );
+
+    // 2. Separate ciphertext and auth tag
+    const tagLength = 16;
+    if (ciphertextWithTag.length < tagLength) {
+      throw new Error("Ciphertext is too short to contain an auth tag.");
+    }
+    const ciphertext = ciphertextWithTag.subarray(0, ciphertextWithTag.length - tagLength);
+    const authTag = ciphertextWithTag.subarray(ciphertextWithTag.length - tagLength);
+
+    // 3. Prepare AAD
+    const aad = Buffer.from(
+      `EMAILSHIELD:${CONTEXT_MAILBOX}:${userId.trim()}:${keyVersion}`,
+      "utf-8"
+    );
+
+    // 4. Decrypt plaintext via AES-256-GCM
+    const decipher = crypto.createDecipheriv("aes-256-gcm", dek, nonce);
+    decipher.setAAD(aad);
+    decipher.setAuthTag(authTag);
+
+    const decrypted = Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]);
+
+    return decrypted.toString("utf-8");
+  } catch (error: any) {
+    throw new Error(`Decryption failed: ${error?.message || error}`);
+  }
 }

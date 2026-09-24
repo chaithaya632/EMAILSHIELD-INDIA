@@ -20,6 +20,13 @@ class GeolocationInfo(BaseModel):
     asn: Optional[str] = None
     db_provider: str
     db_version: str
+    status: Optional[str] = None
+    accuracy_radius_km: Optional[int] = None
+    accuracy_radius: Optional[int] = None
+    network_type: Optional[str] = "Unknown"
+    vpn_indicator: Optional[str] = "UNKNOWN"
+    proxy_indicator: Optional[str] = "UNKNOWN"
+    tor_indicator: Optional[str] = "UNKNOWN"
 
 class AuthEvidence(BaseModel):
     mechanism: str  # SPF, DKIM, DMARC
@@ -131,6 +138,8 @@ class AuthAlignmentResult(BaseModel):
     dmarc_recorded: str = "NONE"
     spf_aligned: bool = False
     dkim_aligned: bool = False
+    spf_alignment_status: str = "NOT_DETERMINABLE"
+    dkim_alignment_status: str = "NOT_DETERMINABLE"
     effective_dmarc: str = "NONE / UNCONFIGURED"
     dmarc_reason: str = ""
     threat_detected: bool = False

@@ -178,8 +178,8 @@ class TestManualGeoIPSearch(unittest.TestCase):
     def test_single_map_in_relevant_tab(self):
         """Verify tab_geoip renders exactly one map component."""
         import inspect
-        import app
-        src = inspect.getsource(app)
+        import views.ioc_intel as ioc_view
+        src = inspect.getsource(ioc_view)
 
         # Count occurrences of st.map inside the tab_geoip block
         self.assertIn("with tab_geoip:", src)

@@ -1101,6 +1101,67 @@ class LocalStorageManager:
             conn.commit()
             return True, ""
 
+    def cleanup_demo_cases(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Safely clean up local demo case files (data/local/cases/CASE-ISO-*.json, etc.)
+        where user_id in ('user_a', 'user_b', 'test_user') or matches demo IDs/flags.
+        Strictly preserves all real cases, investigations, and forensic evidence!
+        """
+        deleted_files = []
+        demo_prefixes = ("CASE-ISO-", "CASE-DEMO-", "CASE-TEST-", "TEST-")
+        demo_users = {"user_a", "user_b", "test_user"}
+        if user_id:
+            demo_users.add(str(user_id))
+
+        if os.path.exists(self.cases_dir):
+            for fname in os.listdir(self.cases_dir):
+                if not fname.endswith(".json"):
+                    continue
+                case_id = fname[:-5]
+                is_demo_id = any(case_id.upper().startswith(p) for p in demo_prefixes)
+
+                fpath = os.path.join(self.cases_dir, fname)
+                if not self._is_path_safe(fpath):
+                    continue
+
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception:
+                    data = {}
+
+                c_user = data.get("user_id")
+                is_demo_flag = data.get("is_demo") is True
+                preserve_ev = data.get("preserve_evidence") is True
+
+                # Never delete if preserve_evidence is True
+                if preserve_ev:
+                    continue
+
+                if (is_demo_id and (c_user in demo_users or is_demo_flag)) or is_demo_flag or (c_user in ("user_a", "user_b", "test_user") and is_demo_id):
+                    try:
+                        os.remove(fpath)
+                        deleted_files.append(case_id)
+                    except Exception:
+                        pass
+
+        # Also remove matching records from local SQLite DB if it exists
+        if os.path.exists(self.db_path):
+            try:
+                with self._get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "DELETE FROM cases WHERE case_id LIKE 'CASE-ISO-%' OR case_id LIKE 'CASE-DEMO-%' OR case_id LIKE 'CASE-TEST-%' OR case_id LIKE 'TEST-%' OR user_id IN ('user_a', 'user_b', 'test_user')"
+                    )
+                    conn.commit()
+            except Exception:
+                pass
+
+        return {
+            "deleted_files": deleted_files,
+            "count": len(deleted_files)
+        }
+
     # =================================================================
     # AUDIT LOGGING
     # =================================================================

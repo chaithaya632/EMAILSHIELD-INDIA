@@ -60,6 +60,14 @@ def filter_raw_json_allowlist(case_data: Dict[str, Any]) -> Dict[str, Any]:
     clean_report["subject"] = case_data.get("subject", "No Subject")
     clean_report["sender"] = case_data.get("sender", "Unknown")
     clean_report["content_type"] = case_data.get("content_type", "Unknown")
+    if "source" in case_data:
+        clean_report["source"] = case_data["source"]
+    if "message_uid" in case_data:
+        clean_report["message_uid"] = case_data["message_uid"]
+    if "date" in case_data:
+        clean_report["date"] = case_data["date"]
+    if "message_id" in case_data:
+        clean_report["message_id"] = case_data["message_id"]
 
     # Threat & Verdict Telemetry
     clean_report["threat_verdict"] = case_data.get("threat_verdict") or case_data.get("risk_score", "UNCLASSIFIED")
@@ -252,27 +260,38 @@ def save_case(case_data: Dict[str, Any], user_id: Optional[str] = None, client: 
                 "raw_json": clean_telemetry
             }
 
-            res = client.table("cases").upsert(case_row, on_conflict="id,user_id").execute()
+            if case_data.get("id"):
+                case_row["id"] = case_data["id"]
+            conflict_col = "id,user_id" if "id" in case_row else "user_id,case_number"
+            res = client.table("cases").upsert(case_row, on_conflict=conflict_col).execute()
             inserted_id = res.data[0]["id"] if res and res.data else None
 
             # 2. Insert Associated Indicators (With Composite Foreign Key Integrity)
             if inserted_id:
                 raw_inds = case_data.get("indicators", [])
                 ind_rows = []
+                itype_map = {
+                    "ip": "IP", "url": "URL", "email": "Email", "domain": "Domain",
+                    "hash": "Hash", "upi": "UPI", "bank_account": "Bank_Account"
+                }
                 for ind in raw_inds:
                     itype = ind.get("type") if isinstance(ind, dict) else getattr(ind, "type", "UNKNOWN")
                     ival = ind.get("value") if isinstance(ind, dict) else getattr(ind, "value", "")
                     isrc = ind.get("source") if isinstance(ind, dict) else getattr(ind, "source", "Body/Headers")
-                    if itype and ival:
+                    norm_type = itype_map.get(str(itype).strip().lower(), str(itype))
+                    if norm_type in itype_map.values() and ival:
                         ind_rows.append({
                             "case_id": inserted_id,
                             "user_id": user_id,
-                            "type": itype,
-                            "value": ival,
+                            "type": norm_type,
+                            "value": str(ival),
                             "source": isrc
                         })
                 if ind_rows:
-                    client.table("indicators").insert(ind_rows).execute()
+                    try:
+                        client.table("indicators").insert(ind_rows).execute()
+                    except Exception:
+                        pass
             return True
         except Exception:
             # Fail closed in public multi-user mode
@@ -300,25 +319,36 @@ def save_case(case_data: Dict[str, Any], user_id: Optional[str] = None, client: 
                 "content_type": clean_telemetry.get("content_type", "Unknown"),
                 "raw_json": clean_telemetry
             }
-            res = client.table("cases").upsert(case_row, on_conflict="id,user_id").execute()
+            if case_data.get("id"):
+                case_row["id"] = case_data["id"]
+            conflict_col = "id,user_id" if "id" in case_row else "user_id,case_number"
+            res = client.table("cases").upsert(case_row, on_conflict=conflict_col).execute()
             inserted_id = res.data[0]["id"] if res and res.data else None
             if inserted_id:
                 raw_inds = case_data.get("indicators", [])
                 ind_rows = []
+                itype_map = {
+                    "ip": "IP", "url": "URL", "email": "Email", "domain": "Domain",
+                    "hash": "Hash", "upi": "UPI", "bank_account": "Bank_Account"
+                }
                 for ind in raw_inds:
                     itype = ind.get("type") if isinstance(ind, dict) else getattr(ind, "type", "UNKNOWN")
                     ival = ind.get("value") if isinstance(ind, dict) else getattr(ind, "value", "")
                     isrc = ind.get("source") if isinstance(ind, dict) else getattr(ind, "source", "Body/Headers")
-                    if itype and ival:
+                    norm_type = itype_map.get(str(itype).strip().lower(), str(itype))
+                    if norm_type in itype_map.values() and ival:
                         ind_rows.append({
                             "case_id": inserted_id,
                             "user_id": user_id,
-                            "type": itype,
-                            "value": ival,
+                            "type": norm_type,
+                            "value": str(ival),
                             "source": isrc
                         })
                 if ind_rows:
-                    client.table("indicators").insert(ind_rows).execute()
+                    try:
+                        client.table("indicators").insert(ind_rows).execute()
+                    except Exception:
+                        pass
             return True
         except Exception:
             if is_supabase_configured():
@@ -332,11 +362,22 @@ def save_case(case_data: Dict[str, Any], user_id: Optional[str] = None, client: 
         return True
 
 
+def _is_uuid(val: Any) -> bool:
+    try:
+        uuid.UUID(str(val).strip())
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
 def get_case_record(case_id: str, client: Any = None) -> Optional[Dict[str, Any]]:
     """Retrieve full record and metadata for a specific case."""
     if client:
         try:
-            res = client.table("cases").select("*").or_(f"id.eq.{case_id},case_number.eq.{case_id}").execute()
+            if _is_uuid(case_id):
+                res = client.table("cases").select("*").eq("id", case_id).execute()
+            else:
+                res = client.table("cases").select("*").eq("case_number", case_id).execute()
             if res and res.data:
                 row = res.data[0]
                 data = row.get("raw_json", {})
@@ -350,6 +391,7 @@ def get_case_record(case_id: str, client: Any = None) -> Optional[Dict[str, Any]
         except Exception:
             if is_public_multiuser_mode() or is_supabase_configured():
                 return None
+
 
     if is_public_multiuser_mode() or (is_supabase_configured() and client is None):
         # Fail closed: do not query shared local SQLite without authenticated client
@@ -466,7 +508,10 @@ def update_case_metadata(case_id: str, status: str = None, investigator: str = N
                 updates["case_severity"] = severity
             if updates:
                 updates["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                res = client.table("cases").update(updates).or_(f"id.eq.{case_id},case_number.eq.{case_id}").execute()
+                if _is_uuid(case_id):
+                    res = client.table("cases").update(updates).eq("id", case_id).execute()
+                else:
+                    res = client.table("cases").update(updates).eq("case_number", case_id).execute()
                 if res and hasattr(res, "data") and isinstance(res.data, list):
                     return len(res.data) > 0
             return True
@@ -502,6 +547,303 @@ def update_case_metadata(case_id: str, status: str = None, investigator: str = N
         conn.commit()
     conn.close()
     return True
+
+
+def close_case(
+    case_id: str,
+    user_id: Optional[str] = None,
+    client: Any = None
+) -> tuple:
+    """Close a case by setting status to 'Closed'.
+
+    Authorization: Requires authenticated user with case ownership via RLS.
+    Preserves ALL forensic evidence — only changes lifecycle status.
+    Does NOT delete: email evidence, headers, attachments, IOCs, timeline,
+    reports, case history, Gmail messages, Sentinel telemetry, or checkpoints.
+
+    Returns:
+        (success: bool, error_message: str)
+    """
+    if not case_id or not isinstance(case_id, str):
+        return (False, "Invalid case ID.")
+
+    if not is_authorized_caller(user_id=user_id, client=client):
+        return (False, "Authorization denied. Authenticated user required.")
+
+    # Verify the case exists and is accessible to this user (RLS enforced)
+    existing = get_case_record(case_id, client=client)
+    if not existing:
+        return (False, "Case not found or access denied.")
+
+    current_status = str(existing.get("status") or "Open").strip().upper()
+    if current_status == "CLOSED":
+        return (True, "Case is already closed.")
+
+    success = update_case_metadata(
+        case_id=case_id,
+        status="Closed",
+        client=client
+    )
+
+    if success:
+        return (True, "")
+    return (False, "Failed to update case status.")
+
+
+def close_all_open_cases(
+    user_id: Optional[str] = None,
+    client: Any = None
+) -> Dict[str, Any]:
+    """Bulk-closes all open cases for the authenticated tenant across active data stores.
+    
+    Preserves all forensic records, raw JSON, and hashes for BSA 2023 compliance.
+    Fails closed if unauthenticated.
+    """
+    if not is_authorized_caller(user_id=user_id, client=client):
+        return {
+            "success": False,
+            "error": "Unauthorized: Access denied.",
+            "closed_count": 0
+        }
+
+    closed_count = 0
+
+    # 1. If get_all_cases returns cases (or is mocked), update case-by-case to enforce tenant isolation
+    all_cases = get_all_cases(client=client, limit=500)
+    if all_cases:
+        for c in all_cases:
+            case_owner = c.get("user_id")
+            if user_id and case_owner and case_owner != user_id:
+                continue
+            status = str(c.get("status") or "Open").strip().upper()
+            if status in ("CLOSED", "RESOLVED"):
+                continue
+            cid = c.get("case_id") or c.get("case_number")
+            if cid:
+                ok = update_case_metadata(case_id=cid, status="Closed", client=client)
+                if ok:
+                    closed_count += 1
+        return {
+            "success": True,
+            "closed_count": closed_count
+        }
+
+    # 2. In Supabase (when configured & client active)
+    if client and hasattr(client, "table"):
+        try:
+            res = client.table("cases").update({"status": "Closed"}).eq("status", "Open").execute()
+            if res and hasattr(res, "data") and isinstance(res.data, list):
+                closed_count += len(res.data)
+        except Exception:
+            pass
+
+    # 3. In offline SQLite (data/cases/cases.db)
+    if not is_public_multiuser_mode() and client is None:
+        if os.path.exists(DB_PATH):
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute("UPDATE cases SET status = 'Closed' WHERE status = 'Open'")
+                rowcount = cursor.rowcount if cursor.rowcount > 0 else 0
+                conn.commit()
+                conn.close()
+                closed_count += rowcount
+            except Exception:
+                pass
+
+    # 4. In local metadata store (data/local/metadata/local_storage.db)
+    local_db_path = os.path.join("data", "local", "metadata", "local_storage.db")
+    if os.path.exists(local_db_path) and client is None:
+        try:
+            conn = sqlite3.connect(local_db_path)
+            cursor = conn.cursor()
+            if user_id:
+                cursor.execute("UPDATE cases SET status = 'closed' WHERE status = 'active' AND user_id = ?", (user_id,))
+            else:
+                cursor.execute("UPDATE cases SET status = 'closed' WHERE status = 'active'")
+            local_rowcount = cursor.rowcount if cursor.rowcount > 0 else 0
+            conn.commit()
+            conn.close()
+            closed_count += local_rowcount
+        except Exception:
+            pass
+
+    return {
+        "success": True,
+        "closed_count": closed_count
+    }
+
+
+def clear_threat_activity(
+    user_id: Optional[str] = None,
+    client: Any = None
+) -> Dict[str, Any]:
+    """Bulk-closes all currently open threat cases for the authenticated tenant.
+    
+    Identifies open cases with classification in ('THREAT', 'SUSPICIOUS') or
+    severity in ('CRITICAL', 'HIGH', 'MEDIUM'), and closes them while preserving
+    all forensic evidence.
+    Fails closed if unauthenticated.
+    """
+    if not is_authorized_caller(user_id=user_id, client=client):
+        return {
+            "success": False,
+            "error": "Unauthorized: Access denied.",
+            "cleared_count": 0
+        }
+
+    all_cases = get_all_cases(client=client, limit=500)
+    cleared_count = 0
+
+    for c in all_cases:
+        case_owner = c.get("user_id")
+        if user_id and case_owner and case_owner != user_id:
+            continue
+        status = str(c.get("status") or "Open").strip().upper()
+        if status in ("CLOSED", "RESOLVED"):
+            continue
+
+        cls = derive_case_classification(c)
+        if cls == "CLEAN":
+            continue
+        sev = derive_case_severity(c)
+        if cls in ("THREAT", "SUSPICIOUS") or sev in ("CRITICAL", "HIGH", "MEDIUM"):
+            cid = c.get("case_id") or c.get("case_number")
+            if cid:
+                ok, _ = close_case(case_id=str(cid), user_id=user_id, client=client)
+                if ok:
+                    cleared_count += 1
+
+    return {
+        "success": True,
+        "cleared_count": cleared_count
+    }
+
+
+def _delete_single_case(case_id: str, client: Any = None) -> bool:
+    """Internal helper to delete a case and associated indicators."""
+    if client:
+        try:
+            if _is_uuid(case_id):
+                client.table("indicators").delete().eq("case_id", case_id).execute()
+                client.table("cases").delete().eq("id", case_id).execute()
+            else:
+                client.table("indicators").delete().eq("case_id", case_id).execute()
+                client.table("cases").delete().eq("case_number", case_id).execute()
+            return True
+        except Exception:
+            if is_public_multiuser_mode() or is_supabase_configured():
+                return False
+
+    if is_public_multiuser_mode() or (is_supabase_configured() and client is None):
+        return False
+
+    _init_sqlite_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM indicators WHERE case_id = ?", (case_id,))
+    cursor.execute("DELETE FROM cases WHERE case_id = ?", (case_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def cleanup_demo_cases(
+    user_id: Optional[str] = None,
+    client: Any = None,
+    dry_run: bool = False
+) -> Dict[str, Any]:
+    """
+    Safely purges confirmed synthetic demo and test cases for the authenticated user under RLS.
+
+    CRITICAL INVARIANTS:
+    - Requires is_authorized_caller(user_id=user_id, client=client). If not, return error.
+    - Identifies demo cases:
+      Case numbers starting with 'CASE-ISO-', 'CASE-DEMO-', 'CASE-TEST-', 'TEST-', 'DEMO-',
+      or with is_demo: True / is_test: True in raw_json, or tags containing 'demo'/'test'.
+    - Deletes ONLY confirmed demo cases under RLS:
+      Uses _delete_single_case under client RLS (or SQLite).
+    - PRESERVE all real cases! Never delete cases with real user investigations or real forensic evidence.
+    - Never bypass RLS or use elevated service keys. Respect RLS and tenant ownership.
+    """
+    if not is_authorized_caller(user_id=user_id, client=client):
+        return {
+            "success": False,
+            "status": "denied",
+            "error": "Authorization denied. Authenticated user required.",
+            "deleted_count": 0,
+            "preserved_count": 0,
+            "deleted_case_ids": [],
+            "protected_case_ids": [],
+            "demo_cases": [],
+            "dry_run": dry_run
+        }
+
+    demo_prefixes = ("CASE-ISO-", "CASE-DEMO-", "CASE-TEST-", "TEST-", "DEMO-")
+    demo_case_numbers: List[str] = []
+    preserved_case_numbers: List[str] = []
+
+    # Fetch cases visible to this tenant under RLS
+    all_cases = get_all_cases(client=client, limit=500)
+
+    for c in all_cases:
+        cid = str(c.get("case_id") or c.get("case_number") or "")
+        if not cid:
+            continue
+
+        raw_j = c.get("raw_json") if isinstance(c.get("raw_json"), dict) else c
+        case_user = c.get("user_id") or raw_j.get("user_id")
+
+        # RLS / Tenant boundary: if case has a user_id and it doesn't match caller, protect from cross-tenant deletion
+        if case_user and user_id and str(case_user) != str(user_id):
+            preserved_case_numbers.append(cid)
+            continue
+
+        # BSA 2023 Forensic Evidence Invariant: preserve_evidence == True is NEVER deleted
+        if c.get("preserve_evidence") is True or raw_j.get("preserve_evidence") is True:
+            preserved_case_numbers.append(cid)
+            continue
+
+        is_demo_prefix = any(cid.upper().startswith(p) for p in demo_prefixes)
+        is_demo_flag = (
+            raw_j.get("is_demo") is True or
+            raw_j.get("is_test") is True or
+            c.get("is_demo") is True or
+            c.get("is_test") is True
+        )
+        tags = raw_j.get("tags") or c.get("tags") or []
+        if isinstance(tags, str):
+            tags = [tags]
+        is_demo_tag = any(str(t).lower() in ("demo", "test", "synthetic") for t in tags)
+
+        subj = str(c.get("subject") or raw_j.get("subject") or "")
+        is_demo_subject = any(term in subj.upper() for term in ("[DEMO]", "[TEST]", "DEMO CASE", "SYNTHETIC PHISH"))
+
+        if is_demo_prefix or is_demo_flag or is_demo_tag or is_demo_subject:
+            demo_case_numbers.append(cid)
+            if not dry_run:
+                _delete_single_case(cid, client=client)
+        else:
+            preserved_case_numbers.append(cid)
+
+    total_deleted = len(demo_case_numbers)
+    return {
+        "success": True,
+        "status": "success",
+        "deleted_count": total_deleted,
+        "supabase_deleted": total_deleted if client else 0,
+        "sqlite_deleted": total_deleted if not client else 0,
+        "local_storage_deleted": 0,
+        "total_deleted": total_deleted,
+        "demo_cases": demo_case_numbers,
+        "deleted_case_ids": demo_case_numbers,
+        "preserved_cases": preserved_case_numbers,
+        "protected_case_ids": preserved_case_numbers,
+        "preserved_count": len(preserved_case_numbers),
+        "dry_run": dry_run
+    }
+
+
 
 
 def sanitize_csv_cell(val: Any) -> Any:
@@ -688,29 +1030,134 @@ def export_case_zip_package(
 # =====================================================================
 
 def _extract_primary_ioc(case_data: Dict[str, Any]) -> str:
-    """Extract primary IOC indicator or origin domain for display in SOC views."""
-    # 1. Check indicators in case_data
+    """Extract primary IOC indicator or origin domain for display in SOC views.
+
+    IMPORTANT: Authentication evidence (SPF/DKIM/DMARC pass/fail results) is NOT an IOC.
+    This function must only return actual threat indicators (URLs, domains, IPs, hashes).
+    DO NOT fall back to returning sender domain for benign/clean emails.
+    If no actual threat indicator or malicious artifact is found, return 'N/A'.
+    Only return sender domain if the email classification is THREAT or SUSPICIOUS
+    and there is a specific spoofing/lookalike finding.
+    """
+    # Authentication-evidence rule IDs that must NEVER be treated as IOC sources.
+    _AUTH_EVIDENCE_RULES = {"RULE-014", "RULE-013"}
+
+    cls = derive_case_classification(case_data)
+    sender = str(case_data.get("sender") or "").strip()
+    sender_domain = ""
+    if "@" in sender:
+        sender_domain = sender.split("@")[-1].strip(">").strip().lower()
+
+    rule_findings = case_data.get("rule_findings", [])
+    if not isinstance(rule_findings, list):
+        rule_findings = []
+
+    threat_findings = [
+        rf for rf in rule_findings
+        if isinstance(rf, dict) and rf.get("rule_id") not in _AUTH_EVIDENCE_RULES
+    ]
+
+    def _is_flagged_in_threat_findings(val: str) -> bool:
+        if not val:
+            return False
+        v_low = val.lower()
+        for rf in threat_findings:
+            ev = str(rf.get("evidence", "")).lower()
+            finding = str(rf.get("finding", "")).lower()
+            desc = str(rf.get("description", "")).lower()
+            if v_low in ev or v_low in finding or v_low in desc:
+                return True
+        return False
+
+    # 1. Check indicators in case_data (URLs, domains, IPs)
     indicators = case_data.get("indicators", [])
     if isinstance(indicators, list):
         for ind in indicators:
-            itype = ind.get("type", "") if isinstance(ind, dict) else getattr(ind, "type", "")
-            ival = ind.get("value", "") if isinstance(ind, dict) else getattr(ind, "value", "")
-            if itype.lower() in ("url", "domain", "ip", "ipv4") and ival:
-                return str(ival)[:40]
-    
-    # 2. Check rule findings for specific indicators
-    rule_findings = case_data.get("rule_findings", [])
-    if isinstance(rule_findings, list):
-        for rf in rule_findings:
-            if isinstance(rf, dict) and rf.get("evidence"):
-                ev = str(rf.get("evidence"))
-                if "http" in ev or ".com" in ev or ".in" in ev:
-                    return ev[:40]
+            if isinstance(ind, dict):
+                itype = str(ind.get("type") or "").strip().lower()
+                ival = str(ind.get("value") or "").strip()
+            elif isinstance(ind, str):
+                ival = ind.strip()
+                if ival.lower().startswith(("http://", "https://", "hxxp")):
+                    itype = "url"
+                elif re.match(r'^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$', ival):
+                    itype = "ip"
+                else:
+                    itype = "domain" if "." in ival else "unknown"
+            else:
+                itype = str(getattr(ind, "type", "") or "").strip().lower()
+                ival = str(getattr(ind, "value", "") or "").strip()
 
-    # 3. Fallback to sender domain or sender address
-    sender = case_data.get("sender", "")
-    if "@" in sender:
-        return sender.split("@")[-1].strip(">").strip()
+            if not ival:
+                continue
+
+            # Check URLs and IPs
+            if itype in ("url", "ip", "ipv4"):
+                return ival[:40]
+
+            # Check domains: If an indicator is a benign domain (e.g. matching sender domain
+            # of a clean email), do not treat it as an IOC unless it was flagged in a threat rule finding.
+            if itype in ("domain", "hostname"):
+                ival_clean = ival.lower().strip()
+                is_sender = (ival_clean == sender_domain) or (bool(sender_domain) and ival_clean.endswith("." + sender_domain))
+                if cls == "CLEAN" or is_sender:
+                    if _is_flagged_in_threat_findings(ival_clean):
+                        return ival[:40]
+                    continue
+                else:
+                    return ival[:40]
+
+    # 2. Check rule findings for actual threat IOCs (URLs, IPs)
+    for rf in threat_findings:
+        ev_raw = rf.get("evidence", "")
+        if isinstance(ev_raw, list):
+            ev_str = " ".join(str(e) for e in ev_raw)
+        else:
+            ev_str = str(ev_raw)
+
+        if not ev_str:
+            continue
+
+        ev_lower = ev_str.lower()
+        if "http" in ev_lower or "hxxp" in ev_lower:
+            url_match = re.search(r'(?:https?|hxxps?)://[^\s<>"\'{}|\\^`]+', ev_str, re.IGNORECASE)
+            if url_match:
+                return url_match.group(0)[:40]
+            return ev_str[:40]
+
+        ip_match = re.search(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b', ev_str)
+        if ip_match:
+            return ip_match.group(0)[:40]
+
+    # 3. DO NOT fall back to returning sender.split("@")[-1] for benign/clean emails!
+    # If no actual threat indicator or malicious artifact is found, return "N/A".
+    # Only return sender domain if the email classification is THREAT or SUSPICIOUS
+    # and there is a specific spoofing/lookalike finding.
+    if cls in ("THREAT", "SUSPICIOUS") and sender_domain:
+        has_spoof_or_lookalike = False
+        lookalike_data = case_data.get("lookalike_analysis") or {}
+        if isinstance(lookalike_data, dict) and lookalike_data.get("is_lookalike"):
+            has_spoof_or_lookalike = True
+        else:
+            for rf in rule_findings:
+                if not isinstance(rf, dict):
+                    continue
+                rid = str(rf.get("rule_id", "")).upper()
+                finding_text = (
+                    str(rf.get("finding", "")) + " " +
+                    str(rf.get("description", "")) + " " +
+                    str(rf.get("rule_name", ""))
+                ).lower()
+                if rid in ("RULE-001", "RULE-002", "RULE-026"):
+                    has_spoof_or_lookalike = True
+                    break
+                if any(term in finding_text for term in ("spoof", "lookalike", "typosquat", "impersonat", "homoglyph", "confusable")):
+                    has_spoof_or_lookalike = True
+                    break
+
+        if has_spoof_or_lookalike:
+            return sender_domain[:40]
+
     return "N/A"
 
 
@@ -824,7 +1271,13 @@ def derive_case_classification(case_data: Dict[str, Any]) -> str:
 
 def derive_case_severity(case_data: Dict[str, Any]) -> str:
     """Extract and normalize case severity level into standard uppercase enum."""
-    sev = str(case_data.get("case_severity") or case_data.get("severity") or "MEDIUM").strip().upper()
+    sev = str(case_data.get("case_severity") or case_data.get("severity") or "").strip().upper()
+    if not sev:
+        raw_risk = str(case_data.get("risk_score") or "").strip().upper()
+        if raw_risk in ("CRITICAL", "HIGH", "LOW", "MEDIUM"):
+            sev = raw_risk
+        else:
+            sev = "MEDIUM"
     if "CRIT" in sev:
         return "CRITICAL"
     if "HIGH" in sev:
@@ -929,16 +1382,27 @@ def get_soc_threat_activity(user_id: Optional[str] = None, client: Any = None, l
         return []
 
     effective_limit = max(1, min(limit or 10, 50))
-    cases = get_all_cases(client=client, limit=effective_limit * 2)
+    cases = get_all_cases(client=client, limit=max(effective_limit * 5, 100))
 
     activity = []
     for c in cases:
+        # Skip closed cases
+        case_status = str(c.get("status") or "Open").strip().upper()
+        if case_status in ("CLOSED", "RESOLVED"):
+            continue
+
+        # Filter cases to ONLY include actual security threats
+        cls = derive_case_classification(c)
+        if cls == "CLEAN":
+            continue
+        sev = derive_case_severity(c)
+        if cls not in ("THREAT", "SUSPICIOUS") and sev not in ("CRITICAL", "HIGH", "MEDIUM"):
+            continue
+
         raw_subject = c.get("subject", "No Subject")
         masked_subject = _mask_sensitive_tokens(raw_subject)
         
         primary_ioc = _extract_primary_ioc(c)
-        cls = derive_case_classification(c)
-        sev = derive_case_severity(c)
 
         activity.append({
             "case_id": c.get("case_id") or c.get("case_number", "N/A"),
@@ -985,6 +1449,10 @@ def get_soc_investigation_queue(user_id: Optional[str] = None, client: Any = Non
         cls = derive_case_classification(c)
         status = str(c.get("status") or "Open")
         primary_ioc = _extract_primary_ioc(c)
+
+        # Closed cases must NOT appear in the active triage queue
+        if status.strip().upper() == "CLOSED":
+            continue
 
         # Prioritise open and active investigations
         is_open = status.strip().upper() in ("OPEN", "IN_PROGRESS", "IN PROGRESS", "ACTIVE", "NEW", "INVESTIGATING")

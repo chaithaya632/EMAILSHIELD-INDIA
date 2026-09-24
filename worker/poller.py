@@ -10,6 +10,7 @@ Zero real network calls. Operates strictly with SyntheticIMAPConnection.
 
 import email
 import hashlib
+import datetime
 import json
 import time
 from email.header import decode_header
@@ -151,10 +152,24 @@ class MailboxPoller:
                         port=imap_port,
                         use_ssl=cred.use_ssl
                     )
-                conn.login(username, password)
+                for conn_attempt in range(MAX_POLL_RETRIES):
+                    try:
+                        conn.login(username, password)
+                        status, count = conn.select(folder_name)
+                        break
+                    except Exception as conn_err:
+                        err_str = str(conn_err).lower()
+                        err_cls = type(conn_err).__name__.lower()
+                        if conn_attempt < MAX_POLL_RETRIES - 1 and "auth" not in err_str and "auth" not in err_cls and "password" not in err_str:
+                            logger.warning("Transient connection error during IMAP connect/login (attempt %d/%d): %s. Retrying...", conn_attempt + 1, MAX_POLL_RETRIES, conn_err)
+                            time.sleep(1.0)
+                            try:
+                                conn.logout()
+                            except Exception:
+                                pass
+                        else:
+                            raise
 
-                # 5. Select mailbox
-                status, count = conn.select(folder_name)
                 if status != "OK":
                     logger.error("Failed to select folder %s for mailbox %s", folder_name, mailbox_id)
                     return {"status": "FOLDER_NOT_FOUND", "mailbox_id": mailbox_id, "processed_count": 0, "events": []}
@@ -309,8 +324,24 @@ class MailboxPoller:
                                 "events": events
                             }
 
-                    # Fetch message
-                    fetched = conn.fetch(uid)
+                    # Fetch message with transient network retry
+                    fetched = None
+                    for fetch_attempt in range(MAX_POLL_RETRIES):
+                        try:
+                            fetched = conn.fetch(uid)
+                            break
+                        except Exception as fetch_err:
+                            err_str = str(fetch_err).lower()
+                            if fetch_attempt < MAX_POLL_RETRIES - 1 and "auth" not in err_str:
+                                logger.warning("Transient network error fetching UID %d (attempt %d/%d): %s. Reconnecting...", uid, fetch_attempt + 1, MAX_POLL_RETRIES, fetch_err)
+                                time.sleep(1.0)
+                                try:
+                                    conn.login(username, password)
+                                    conn.select(folder_name)
+                                except Exception:
+                                    pass
+                            else:
+                                raise
 
                     # Critical: Mid-poll lease check after fetch (before processing or checkpointing)
                     if self.lease_manager is not None and not self.lease_manager.is_active():
@@ -545,8 +576,11 @@ class MailboxPoller:
                         from core.case_store import save_case
                         from core.supabase_client import get_supabase_client
                         sb_client = get_supabase_client()
+                        msg_sha256 = hashlib.sha256(raw_bytes).hexdigest() if raw_bytes else f"LIVE-MSG-{uid}"
                         case_dict = {
                             "case_id": f"LIVE-{uid}",
+                            "case_number": f"LIVE-{uid}",
+                            "sha256": msg_sha256,
                             "subject": subject or "(No Subject)",
                             "sender": sender or "Unknown",
                             "threat_verdict": verdict or event_cat,
@@ -556,10 +590,15 @@ class MailboxPoller:
                             "indicators": extracted_iocs or [],
                             "content_type": "text/plain",
                             "source": "live_mail",
+                            "message_uid": uid,
+                            "date": date_str or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                            "message_id": msg_id,
                         }
-                        save_case(case_dict, user_id=tenant_user_id, client=sb_client)
+                        saved = save_case(case_dict, user_id=tenant_user_id, client=sb_client)
+                        if not saved:
+                            logger.warning("save_case returned False for Live Mail UID %d", uid)
                     except Exception as save_err:
-                        logger.debug("Optional case persistence skipped for UID %d: %s", uid, save_err)
+                        logger.warning("Case persistence error for UID %d: %s", uid, save_err)
 
                     # Advance checkpoint strictly upon successful processing
                     self.checkpoint_store.advance_checkpoint(
@@ -616,6 +655,29 @@ class MailboxPoller:
                     )
                 except Exception:
                     pass
+
+                try:
+                    from core.supabase_client import get_supabase_client
+                    sb_client = get_supabase_client()
+                    if sb_client and tenant_user_id:
+                        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                        update_payload: Dict[str, Any] = {
+                            "last_scan_timestamp": now_iso,
+                        }
+                        if highest_uid > 0:
+                            update_payload["last_processed_uid"] = highest_uid
+                        res = sb_client.table("sentinel_checkpoints").update(update_payload).eq("user_id", tenant_user_id).execute()
+                        if not res or not res.data:
+                            sb_client.table("sentinel_checkpoints").upsert({
+                                "user_id": tenant_user_id,
+                                "worker_id": str(self.identity.worker_id),
+                                "mailbox_id": mailbox_id,
+                                "folder_name": folder_name,
+                                "last_processed_uid": highest_uid,
+                                "last_scan_timestamp": now_iso,
+                            }, on_conflict="user_id,mailbox_id,folder_name").execute()
+                except Exception as cp_err:
+                    logger.debug("Supabase checkpoint sync error: %s", cp_err)
 
                 stats_dict = self.checkpoint_store.get_stats(
                     user_id=tenant_user_id,

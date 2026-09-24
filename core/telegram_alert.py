@@ -167,7 +167,9 @@ def get_telegram_config(overrides: Optional[Dict[str, Any]] = None) -> Dict[str,
 
     return {
         "token": token,
+        "bot_token": token,
         "chat_id": chat_id,
+        "destination_target": chat_id,
         "is_token_configured": is_token_valid,
         "is_destination_configured": is_dest_valid,
         "is_enabled": is_enabled,
@@ -265,11 +267,42 @@ def send_telegram_alert(
         return False, f"Telegram dispatch failed: {safe_err}"
 
 
+class TelegramTestResult(dict):
+    """
+    Dual-contract result object for Telegram alert connectivity & delivery tests.
+    Functions 100% as a dictionary with keys:
+        'api_status', 'auth_status', 'destination_status',
+        'delivery_status', 'bot_username', 'details'
+    Also supports 2-tuple unpacking:
+        success, msg = test_telegram_alert_delivery(...)
+    for complete backward compatibility without raising ValueError.
+    """
+    @property
+    def is_success(self) -> bool:
+        return self.get("delivery_status") == "DELIVERED"
+
+    @property
+    def message(self) -> str:
+        return self.get("details", "")
+
+    def __iter__(self):
+        # Enables: success, msg = test_telegram_alert_delivery(...)
+        yield self.is_success
+        yield self.message
+
+    def __getitem__(self, key):
+        if key == 0:
+            return self.is_success
+        if key == 1:
+            return self.message
+        return super().__getitem__(key)
+
+
 def test_telegram_alert_delivery(
     bot_token: str,
     chat_id: str,
     timeout: float = 8.0
-) -> Dict[str, Any]:
+) -> TelegramTestResult:
     """
     Executes a controlled 4-phase connectivity and delivery test:
     1. Telegram API (reachable)
@@ -299,7 +332,7 @@ def test_telegram_alert_delivery(
             result["api_status"] = "PASS"
             result["auth_status"] = "FAIL"
             result["details"] = auth_msg
-        return result
+        return TelegramTestResult(result)
 
     result["api_status"] = "PASS"
     result["auth_status"] = "PASS"
@@ -310,7 +343,7 @@ def test_telegram_alert_delivery(
     if not dest_ok:
         result["destination_status"] = "FAIL"
         result["details"] = dest_msg
-        return result
+        return TelegramTestResult(result)
 
     result["destination_status"] = "PASS"
 
@@ -334,7 +367,7 @@ def test_telegram_alert_delivery(
         result["delivery_status"] = "FAILED"
         result["details"] = deliver_msg
 
-    return result
+    return TelegramTestResult(result)
 
 
 run_telegram_connectivity_test = test_telegram_alert_delivery

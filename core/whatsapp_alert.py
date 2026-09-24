@@ -119,6 +119,8 @@ def get_whatsapp_config(overrides: Optional[Dict[str, Any]] = None) -> Dict[str,
     # 1. Resolve API Key
     key = (
         overrides.get("whatsapp_apikey") or
+        overrides.get("whatsapp_key") or
+        overrides.get("api_key") or
         overrides.get("apikey") or
         overrides.get("token") or
         overrides.get("callmebot_apikey")
@@ -198,7 +200,9 @@ def get_whatsapp_config(overrides: Optional[Dict[str, Any]] = None) -> Dict[str,
 
     return {
         "phone": clean_phone if is_phone_valid else phone,
+        "phone_number": clean_phone if is_phone_valid else phone,
         "apikey": clean_key if is_key_valid else key,
+        "api_key": clean_key if is_key_valid else key,
         "is_destination_configured": is_phone_valid,
         "is_apikey_configured": is_key_valid,
         "is_enabled": is_enabled,
@@ -243,11 +247,42 @@ def send_whatsapp_alert(
         return False, f"WhatsApp dispatch failed: {safe_err}"
 
 
+class WhatsAppTestResult(dict):
+    """
+    Dual-contract result object for WhatsApp alert connectivity & delivery tests.
+    Functions 100% as a dictionary with keys:
+        'destination_status', 'auth_status', 'delivery_status',
+        'masked_destination', 'details'
+    Also supports 2-tuple unpacking:
+        success, msg = test_whatsapp_alert_delivery(...)
+    for complete backward compatibility without raising ValueError.
+    """
+    @property
+    def is_success(self) -> bool:
+        return self.get("delivery_status") == "DELIVERED"
+
+    @property
+    def message(self) -> str:
+        return self.get("details", "")
+
+    def __iter__(self):
+        # Enables: success, msg = test_whatsapp_alert_delivery(...)
+        yield self.is_success
+        yield self.message
+
+    def __getitem__(self, key):
+        if key == 0:
+            return self.is_success
+        if key == 1:
+            return self.message
+        return super().__getitem__(key)
+
+
 def test_whatsapp_alert_delivery(
     phone: str,
     apikey: str,
     timeout: float = 10.0
-) -> Dict[str, Any]:
+) -> WhatsAppTestResult:
     """
     Executes controlled 4-phase WhatsApp connectivity test without sensitive data:
     Phase 1: Validate destination phone format
@@ -258,23 +293,23 @@ def test_whatsapp_alert_delivery(
     """
     valid_p, phone_res = validate_whatsapp_phone(phone)
     if not valid_p:
-        return {
+        return WhatsAppTestResult({
             "destination_status": "INVALID",
             "auth_status": "UNTESTED",
             "delivery_status": "FAILED",
             "masked_destination": mask_phone_number(phone or ""),
             "details": f"Destination phone validation failed: {phone_res}"
-        }
+        })
 
     valid_k, key_res = validate_whatsapp_apikey(apikey)
     if not valid_k:
-        return {
+        return WhatsAppTestResult({
             "destination_status": "VALID",
             "auth_status": "NOT_CONFIGURED",
             "delivery_status": "FAILED",
             "masked_destination": mask_phone_number(phone_res),
             "details": f"Authentication validation failed: {key_res}"
-        }
+        })
 
     now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S UTC")
     test_msg = (
@@ -286,10 +321,10 @@ def test_whatsapp_alert_delivery(
     )
 
     ok, msg = send_whatsapp_alert(phone_res, key_res, test_msg, timeout=timeout)
-    return {
+    return WhatsAppTestResult({
         "destination_status": "VALID",
         "auth_status": "PASS" if ok else "CHECK_CREDENTIALS",
         "delivery_status": "DELIVERED" if ok else "FAILED",
         "masked_destination": mask_phone_number(phone_res),
         "details": msg
-    }
+    })

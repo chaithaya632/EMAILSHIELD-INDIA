@@ -13,7 +13,9 @@ __all__ = [
     "extract_originating_sender_ip",
     "extract_originating_sender_telemetry",
     "resolve_hostname_supplementary",
+    "build_geoip_map",
 ]
+
 
 # Supported local offline databases
 MMDB_CANDIDATES = [
@@ -23,9 +25,57 @@ MMDB_CANDIDATES = [
     os.path.join("data", "geoip", "GeoLite2-Country.mmdb")
 ]
 
-_GEO_CACHE: Dict[str, Dict[str, Any]] = {}
+_GEO_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _READER = None
 _DB_INFO = {"provider": "None", "version": "None"}
+_CLOUD_PROVIDERS_CACHE = None
+_VPN_ASNS_CACHE = None
+_TOR_NODES_CACHE = None
+
+def _get_cloud_providers() -> List[Dict[str, Any]]:
+    global _CLOUD_PROVIDERS_CACHE
+    if _CLOUD_PROVIDERS_CACHE is None:
+        path = os.path.join("data", "threat_intel", "cloud_providers.json")
+        if os.path.exists(path):
+            try:
+                import json
+                with open(path, "r", encoding="utf-8") as f:
+                    _CLOUD_PROVIDERS_CACHE = json.load(f).get("providers", [])
+            except Exception:
+                _CLOUD_PROVIDERS_CACHE = []
+        else:
+            _CLOUD_PROVIDERS_CACHE = []
+    return _CLOUD_PROVIDERS_CACHE
+
+def _get_vpn_asns() -> List[Dict[str, Any]]:
+    global _VPN_ASNS_CACHE
+    if _VPN_ASNS_CACHE is None:
+        path = os.path.join("data", "threat_intel", "vpn_asns.json")
+        if os.path.exists(path):
+            try:
+                import json
+                with open(path, "r", encoding="utf-8") as f:
+                    _VPN_ASNS_CACHE = json.load(f).get("vpn_providers", [])
+            except Exception:
+                _VPN_ASNS_CACHE = []
+        else:
+            _VPN_ASNS_CACHE = []
+    return _VPN_ASNS_CACHE
+
+def _get_tor_nodes() -> set:
+    global _TOR_NODES_CACHE
+    if _TOR_NODES_CACHE is None:
+        path = os.path.join("data", "threat_intel", "tor_exit_nodes.json")
+        if os.path.exists(path):
+            try:
+                import json
+                with open(path, "r", encoding="utf-8") as f:
+                    _TOR_NODES_CACHE = set(json.load(f).get("exit_nodes", []))
+            except Exception:
+                _TOR_NODES_CACHE = set()
+        else:
+            _TOR_NODES_CACHE = set()
+    return _TOR_NODES_CACHE
 
 def _get_reader():
     """Lazily load the MMDB reader if available."""
@@ -56,8 +106,16 @@ def is_public_ip(ip_str: str) -> bool:
     """Check if the IP is a valid public routable address."""
     try:
         ip = ipaddress.ip_address(ip_str.strip())
-        return ip.is_global and not ip.is_private and not ip.is_loopback and not ip.is_reserved and not ip.is_link_local
-    except ValueError:
+        return (
+            ip.is_global
+            and not ip.is_private
+            and not ip.is_loopback
+            and not ip.is_reserved
+            and not ip.is_link_local
+            and not ip.is_multicast
+            and not ip.is_unspecified
+        )
+    except (ValueError, AttributeError):
         return False
 
 def get_geolocation(ip_str: str) -> Dict[str, Any]:
@@ -67,12 +125,12 @@ def get_geolocation(ip_str: str) -> Dict[str, Any]:
     to provide exact Country, Region/State, City, Lat/Long, and ISP/Organization.
     """
     cleaned_ip = ip_str.strip() if isinstance(ip_str, str) else ""
-    
-    if cleaned_ip in _GEO_CACHE:
-        return _GEO_CACHE[cleaned_ip]
 
     # Handle non-public / internal / reserved IPs
     if not is_public_ip(cleaned_ip):
+        cache_key = (cleaned_ip, "N/A")
+        if cache_key in _GEO_CACHE:
+            return _GEO_CACHE[cache_key]
         res = {
             "ip": cleaned_ip,
             "country": "Local / Private Network",
@@ -84,29 +142,39 @@ def get_geolocation(ip_str: str) -> Dict[str, Any]:
             "asn": "None",
             "db_provider": "RFC Standard",
             "db_version": "N/A",
-            "status": "Private/Reserved IP"
+            "status": "Private/Reserved IP",
+            "accuracy_radius_km": None,
+            "accuracy_radius": None,
+            "network_type": "Unknown",
+            "vpn_indicator": "UNKNOWN",
+            "proxy_indicator": "UNKNOWN",
+            "tor_indicator": "UNKNOWN"
         }
-        _GEO_CACHE[cleaned_ip] = res
+        _GEO_CACHE[cache_key] = res
         return res
+
+    reader = _get_reader()
+    db_provider = _DB_INFO.get("provider", "MaxMind GeoLite2 City")
+    db_version = _DB_INFO.get("version", "2026.09 (Offline)")
+
+    cache_key = (cleaned_ip, db_version)
+    if cache_key in _GEO_CACHE:
+        return _GEO_CACHE[cache_key]
 
     country = "UNKNOWN"
     region = "UNKNOWN"
     city = "UNKNOWN"
     lat = None
     lon = None
+    accuracy_radius = None
+    accuracy_radius_km = None
     org = "UNKNOWN"
     asn = "UNKNOWN"
-    db_provider = "MaxMind GeoLite2 City"
-    db_version = "2026.09 (Offline)"
     status = "Success"
 
     # Step 1: Query local offline MMDB
-    reader = _get_reader()
     if reader:
         try:
-            db_provider = _DB_INFO.get("provider", "MaxMind GeoLite2")
-            db_version = _DB_INFO.get("version", "Offline MMDB")
-            
             # Try city lookup
             try:
                 c = reader.city(cleaned_ip)
@@ -119,6 +187,12 @@ def get_geolocation(ip_str: str) -> Dict[str, Any]:
                     lat = float(c.location.latitude)
                 if c.location.longitude is not None:
                     lon = float(c.location.longitude)
+                accuracy_radius = getattr(c.location, "accuracy_radius", None)
+                if accuracy_radius is not None:
+                    try:
+                        accuracy_radius_km = int(accuracy_radius)
+                    except (ValueError, TypeError):
+                        accuracy_radius_km = None
             except AttributeError:
                 # If database only supports country
                 c = reader.country(cleaned_ip)
@@ -152,6 +226,65 @@ def get_geolocation(ip_str: str) -> Dict[str, Any]:
         except Exception:
             pass  # Fall back gracefully to MMDB results
 
+    # Step 3: Network Type & Threat Intelligence Enrichment
+    network_type = "Unknown"
+    vpn_indicator = "UNKNOWN"
+    proxy_indicator = "UNKNOWN"
+    tor_indicator = "UNKNOWN"
+
+    asn_clean = re.search(r'\b(?:AS)?(\d+)\b', str(asn or ""), re.IGNORECASE)
+    asn_num = asn_clean.group(1) if asn_clean else ""
+    org_lower = str(org or "").lower()
+
+    if org_lower in ("", "unknown", "none"):
+        try:
+            orig_t = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(0.2)
+            try:
+                h_name, _, _ = socket.gethostbyaddr(cleaned_ip)
+                if h_name:
+                    org_lower += " " + h_name.lower()
+            finally:
+                socket.setdefaulttimeout(orig_t)
+        except Exception:
+            pass
+
+    is_tor = cleaned_ip in _get_tor_nodes()
+
+    is_cloud = False
+    for provider in _get_cloud_providers():
+        if asn_num and asn_num in provider.get("asns", []):
+            is_cloud = True
+            break
+        if any(kw in org_lower for kw in provider.get("org_keywords", [])):
+            is_cloud = True
+            break
+
+    is_vpn = False
+    for prov in _get_vpn_asns():
+        if asn_num and asn_num in prov.get("asns", []):
+            is_vpn = True
+            break
+        if any(kw in org_lower for kw in prov.get("org_keywords", [])):
+            is_vpn = True
+            break
+
+    if is_tor or is_vpn:
+        network_type = "VPN / Proxy"
+        vpn_indicator = "DETECTED"
+        proxy_indicator = "DETECTED"
+        tor_indicator = "DETECTED" if is_tor else "NOT_DETECTED"
+    elif is_cloud:
+        network_type = "Cloud / Hosting"
+        vpn_indicator = "NOT_DETECTED"
+        proxy_indicator = "NOT_DETECTED"
+        tor_indicator = "NOT_DETECTED"
+    else:
+        network_type = "Residential / Enterprise"
+        vpn_indicator = "NOT_DETECTED"
+        proxy_indicator = "NOT_DETECTED"
+        tor_indicator = "NOT_DETECTED"
+
     res = {
         "ip": cleaned_ip,
         "country": country,
@@ -163,10 +296,16 @@ def get_geolocation(ip_str: str) -> Dict[str, Any]:
         "asn": asn,
         "db_provider": db_provider,
         "db_version": db_version,
-        "status": status
+        "status": status,
+        "accuracy_radius_km": accuracy_radius_km,
+        "accuracy_radius": accuracy_radius_km,
+        "network_type": network_type,
+        "vpn_indicator": vpn_indicator,
+        "proxy_indicator": proxy_indicator,
+        "tor_indicator": tor_indicator
     }
     
-    _GEO_CACHE[cleaned_ip] = res
+    _GEO_CACHE[cache_key] = res
     return res
 
 COUNTRY_FLAGS = {
@@ -441,6 +580,12 @@ def get_sender_location(
             "display_location": "Sender Location Unavailable",
             "latitude": None,
             "longitude": None,
+            "accuracy_radius_km": None,
+            "accuracy_radius": None,
+            "network_type": "Unknown",
+            "vpn_indicator": "UNKNOWN",
+            "proxy_indicator": "UNKNOWN",
+            "tor_indicator": "UNKNOWN",
             "org": "Unknown Network",
             "asn": "None",
             "db_provider": "N/A",
@@ -478,6 +623,12 @@ def get_sender_location(
         "display_location": display_loc,
         "latitude": geo.get("latitude"),
         "longitude": geo.get("longitude"),
+        "accuracy_radius_km": geo.get("accuracy_radius_km"),
+        "accuracy_radius": geo.get("accuracy_radius"),
+        "network_type": geo.get("network_type"),
+        "vpn_indicator": geo.get("vpn_indicator"),
+        "proxy_indicator": geo.get("proxy_indicator"),
+        "tor_indicator": geo.get("tor_indicator"),
         "org": geo.get("org") or "Unknown ISP",
         "asn": geo.get("asn") or "Unknown ASN",
         "db_provider": geo.get("db_provider"),
@@ -534,6 +685,12 @@ def derive_authoritative_location(case_data: Any) -> Dict[str, Any]:
         "display_location": "Unavailable",
         "latitude": None,
         "longitude": None,
+        "accuracy_radius_km": None,
+        "accuracy_radius": None,
+        "network_type": "Unknown",
+        "vpn_indicator": "UNKNOWN",
+        "proxy_indicator": "UNKNOWN",
+        "tor_indicator": "UNKNOWN",
         "org": "Unknown Network",
         "asn": "Unknown ASN",
         "cloud_provider": "None",
@@ -631,5 +788,111 @@ def derive_authoritative_location(case_data: Any) -> Dict[str, Any]:
                 res[ind_key] = infra_dict[ind_key]
 
     return res
+
+
+def build_geoip_map(locations: List[Dict[str, Any]]) -> Optional[Any]:
+    """
+    Builds an interactive Plotly map for GeoIP intelligence, displaying markers
+    with custom tooltips and roles (Originating vs Intermediate Relay vs Destination).
+    Strictly read-only: does not modify any system state, counters, or telemetry.
+    """
+    import plotly.graph_objects as go
+
+    if not locations:
+        fig = go.Figure()
+        fig.add_trace(go.Scattergeo(
+            lon=[0], lat=[20],
+            text=["No geolocatable IP coordinates found"],
+            mode="text",
+            textposition="middle center",
+            textfont=dict(size=14, color="#888888")
+        ))
+        fig.update_layout(
+            geo=dict(showland=True, landcolor="#1e1e24", showocean=True, oceancolor="#0f1117"),
+            height=420,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)"
+        )
+        return fig
+
+    fig = go.Figure()
+    lats = []
+    lons = []
+    texts = []
+    colors = []
+    roles = []
+
+    for idx, loc in enumerate(locations):
+        lat = loc.get("latitude")
+        lon = loc.get("longitude")
+        if lat is None or lon is None:
+            continue
+        lats.append(float(lat))
+        lons.append(float(lon))
+
+        role = loc.get("role") or ("Originating Client / Outbound MTA" if idx == 0 else "Intermediate Relay")
+        roles.append(role)
+
+        # Color coding by role
+        if "Origin" in role:
+            colors.append("#EF553B")  # Red
+        elif "Destination" in role or "Inbound" in role:
+            colors.append("#00CC96")  # Green
+        else:
+            colors.append("#FFA15A")  # Orange
+
+        ip = loc.get("ip") or loc.get("sender_ip") or "N/A"
+        city = loc.get("city") or "Unknown"
+        country = loc.get("country") or "Unknown"
+        org = loc.get("org") or loc.get("isp") or "Unknown ISP"
+        acc = loc.get("accuracy_radius") or loc.get("accuracy_radius_km")
+        acc_str = f"<br>Accuracy: ~{acc} km" if acc else ""
+
+        tooltip = (
+            f"<b>Role:</b> {role}<br>"
+            f"<b>IP:</b> {ip}<br>"
+            f"<b>Location:</b> {city}, {country}<br>"
+            f"<b>Org/ISP:</b> {org}"
+            f"{acc_str}"
+        )
+        texts.append(tooltip)
+
+    if not lats:
+        return build_geoip_map([])
+
+    fig.add_trace(go.Scattergeo(
+        lon=lons,
+        lat=lats,
+        text=texts,
+        hoverinfo="text",
+        mode="markers+text",
+        marker=dict(
+            size=14,
+            color=colors,
+            line=dict(width=2, color="#ffffff"),
+            symbol="circle"
+        ),
+        name="GeoIP Locations"
+    ))
+
+    fig.update_layout(
+        geo=dict(
+            showland=True,
+            landcolor="#1c202a",
+            showocean=True,
+            oceancolor="#0e1117",
+            showcountries=True,
+            countrycolor="#333b4d",
+            projection_type="natural earth",
+            center=dict(lat=sum(lats)/len(lats), lon=sum(lons)/len(lons))
+        ),
+        margin=dict(l=0, r=0, t=30, b=10),
+        height=450,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        title=dict(text="GeoIP Intelligence Map", font=dict(size=14, color="#ffffff"))
+    )
+    return fig
+
 
 

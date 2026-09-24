@@ -247,6 +247,69 @@ def get_user_mailbox(user_id: str, client: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def list_user_mailboxes(user_id: str, client: Any = None) -> List[Dict[str, Any]]:
+    """
+    Retrieves a list of safe mailbox metadata records for the user.
+    Enforces RLS and tenant isolation. Never returns encrypted_credentials.
+    """
+    if not user_id:
+        return []
+    if client:
+        try:
+            query = client.table("sentinel_mailboxes_safe").select("*").eq("user_id", user_id)
+            if hasattr(query, "order"):
+                try:
+                    query = query.order("updated_at", desc=True)
+                except Exception:
+                    pass
+            res = query.execute()
+            if res and res.data:
+                return res.data
+        except Exception:
+            try:
+                safe_cols = "id,user_id,worker_id,created_at,updated_at,provider,email_address,imap_host,imap_port,use_ssl,auth_mechanism,is_active"
+                query = client.table("sentinel_mailboxes").select(safe_cols).eq("user_id", user_id)
+                if hasattr(query, "order"):
+                    try:
+                        query = query.order("updated_at", desc=True)
+                    except Exception:
+                        pass
+                res = query.execute()
+                if res and res.data:
+                    return res.data
+            except Exception:
+                pass
+
+    try:
+        from core.supabase_client import is_supabase_configured
+        from core.case_store import is_public_multiuser_mode
+        if is_public_multiuser_mode() or (is_supabase_configured() and client is None):
+            return []
+    except Exception:
+        pass
+
+    if not client:
+        try:
+            from worker.db import LocalWorkerDBClient
+            loc = LocalWorkerDBClient()
+            loc._load_from_disk()
+            active_mboxes = []
+            for m_id, m in loc.mailboxes.items():
+                if m.get("user_id") == str(user_id):
+                    safe_m = dict(m)
+                    safe_m.pop("encrypted_credentials", None)
+                    safe_m["id"] = m_id
+                    active_mboxes.append(safe_m)
+            active_mboxes.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
+            return active_mboxes
+        except Exception:
+            pass
+
+    mb = get_user_mailbox(user_id, client)
+    return [mb] if mb else []
+
+
+
 def save_user_mailbox_metadata(
     user_id: str,
     worker_id: str,
@@ -410,10 +473,32 @@ def connect_user_sentinel_mailbox(
     except Exception as enc_err:
         return False, f"Credential encryption failed: {str(enc_err)}"
 
+    # 2.5 Ensure authoritative worker record exists in sentinel_workers to satisfy fk_sentinel_mailbox_worker
+    effective_worker_id = worker_id
+    try:
+        worker_rec = get_user_worker(user_id, client)
+        if not worker_rec:
+            ok_w, w_res = upsert_user_worker(user_id, poll_interval_seconds=60, desired_state="RUNNING", client=client)
+            if ok_w and isinstance(w_res, dict) and w_res.get("id"):
+                effective_worker_id = str(w_res["id"])
+            else:
+                worker_rec_retry = get_user_worker(user_id, client)
+                if worker_rec_retry and worker_rec_retry.get("id"):
+                    effective_worker_id = str(worker_rec_retry["id"])
+        else:
+            if worker_rec.get("id"):
+                effective_worker_id = str(worker_rec["id"])
+            try:
+                set_worker_desired_state(user_id, "RUNNING", client)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # 3. Upsert Mailbox Record
     mailbox_payload = {
         "user_id": user_id,
-        "worker_id": worker_id,
+        "worker_id": effective_worker_id,
         "provider": clean_provider,
         "email_address": clean_email,
         "imap_host": clean_host,
@@ -436,7 +521,7 @@ def connect_user_sentinel_mailbox(
             try:
                 curr_ver = existing.get("credential_version", 1) or 1
                 client.rpc("rpc_set_encrypted_mailbox_credential", {
-                    "p_worker_id": worker_id,
+                    "p_worker_id": effective_worker_id,
                     "p_ciphertext": encrypted_envelope,
                     "p_credential_version": curr_ver + 1
                 }).execute()
@@ -465,7 +550,7 @@ def connect_user_sentinel_mailbox(
         try:
             from worker.db import LocalWorkerDBClient
             LocalWorkerDBClient.sync_mailbox_and_worker(
-                worker_id=worker_id,
+                worker_id=effective_worker_id,
                 user_id=user_id,
                 email_address=clean_email,
                 encrypted_credentials=encrypted_envelope,
@@ -479,7 +564,7 @@ def connect_user_sentinel_mailbox(
             local_wid_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "local", "sentinel_worker_id.txt")
             os.makedirs(os.path.dirname(local_wid_path), exist_ok=True)
             with open(local_wid_path, "w", encoding="utf-8") as f:
-                f.write(str(worker_id).strip())
+                f.write(str(effective_worker_id).strip())
 
             poll_flag_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "local", "sentinel_production_polling.txt")
             with open(poll_flag_path, "w", encoding="utf-8") as f:

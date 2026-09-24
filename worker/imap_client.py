@@ -632,6 +632,11 @@ class RealIMAPConnection:
             sorted_uids = sorted(set(uids))
             logger.info("UID SEARCH found %d new messages (since UID %s)", len(sorted_uids), since_uid)
             return sorted_uids
+        except (imaplib.IMAP4.abort, ConnectionResetError, BrokenPipeError, socket.error, TimeoutError) as net_err:
+            logger.warning("Transient network/IMAP abort during search: %s. Resetting connection.", net_err)
+            self._is_connected = False
+            self._imap = None
+            raise IMAPConnectionTimeoutError(f"IMAP socket connection dropped: {net_err}") from net_err
         except Exception as err:
             logger.error("Error during IMAP search: %s", err)
             raise IMAPClientError(f"IMAP search failed: {err}") from err
@@ -688,6 +693,11 @@ class RealIMAPConnection:
                 "size": size,
                 "message_id": message_id or f"<real-{uid}@{self.host}>",
             }
+        except (imaplib.IMAP4.abort, ConnectionResetError, BrokenPipeError, socket.error, TimeoutError) as net_err:
+            logger.warning("Transient network/IMAP abort during fetch UID %d: %s. Resetting connection.", uid, net_err)
+            self._is_connected = False
+            self._imap = None
+            raise IMAPConnectionTimeoutError(f"IMAP socket connection dropped: {net_err}") from net_err
         except Exception as err:
             logger.error("Error fetching message UID %d: %s", uid, err)
             raise IMAPClientError(f"IMAP fetch failed for UID {uid}: {err}") from err

@@ -23,6 +23,7 @@ export interface ImapMessageHeader {
 export interface ImapTestOptions {
   fetchMessages?: boolean;
   maxMessages?: number;
+  sinceUid?: number;
 }
 
 export interface ImapTestResult {
@@ -219,6 +220,10 @@ export async function testGmailImapConnection(
           if (fetchBuffer.includes("A003 OK") || fetchBuffer.includes("A003 NO") || fetchBuffer.includes("A003 BAD")) {
             if (fetchBuffer.includes("A003 OK")) {
               parsedMessages = parseImapFetchResponses(fetchBuffer);
+              if (options?.sinceUid && options.sinceUid > 0) {
+                const since = options.sinceUid;
+                parsedMessages = parsedMessages.filter(msg => msg.uid > since);
+              }
             }
             currentStep = "LOGOUT";
             try {
@@ -285,10 +290,14 @@ export async function testGmailImapConnection(
               // INBOX selected successfully. Check if message headers should be fetched
               if (options?.fetchMessages && totalMessages > 0) {
                 currentStep = "FETCH_HEADERS";
-                const maxToFetch = Math.min(options?.maxMessages || 50, 100);
-                const startSeq = Math.max(1, totalMessages - maxToFetch + 1);
                 fetchBuffer = "";
-                socket?.write(`A003 FETCH ${startSeq}:${totalMessages} (UID RFC822.SIZE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)])\r\n`);
+                if (options.sinceUid && options.sinceUid > 0) {
+                  socket?.write(`A003 UID FETCH ${options.sinceUid + 1}:* (UID RFC822.SIZE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)])\r\n`);
+                } else {
+                  const maxToFetch = Math.min(options?.maxMessages || 50, 100);
+                  const startSeq = Math.max(1, totalMessages - maxToFetch + 1);
+                  socket?.write(`A003 FETCH ${startSeq}:${totalMessages} (UID RFC822.SIZE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)])\r\n`);
+                }
                 return;
               }
 

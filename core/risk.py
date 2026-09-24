@@ -4,6 +4,15 @@ from core.indicators import get_registrable_domain
 from core.domain_intel import KNOWN_ESP_DOMAINS
 from core.auth_claims import KNOWN_LEGIT_ESPS
 
+def _is_auth_ok(auth: Any) -> bool:
+    if not auth:
+        return False
+    if isinstance(auth, dict):
+        eff = auth.get("effective_dmarc", "")
+    else:
+        eff = getattr(auth, "effective_dmarc", "")
+    return eff in ["PASS", "PASS (Delegated ESP)", "PASS (Unverified Alignment)"]
+
 def evaluate_rules(
     parsed_email: Dict[str, Any],
     domain_rep: Any = None,
@@ -100,7 +109,7 @@ def evaluate_rules(
             f_dom = get_base_domain(f_email)
             rp_dom = get_base_domain(rp_email)
             same_rp_org = (f_dom == rp_dom) and bool(f_dom)
-            auth_ok = auth_alignment and auth_alignment.get("effective_dmarc") in ["PASS", "PASS (Delegated ESP)"]
+            auth_ok = _is_auth_ok(auth_alignment)
 
             if not same_rp_org and not is_newsletter and not auth_ok:
                 findings.append({
@@ -120,9 +129,7 @@ def evaluate_rules(
                 })
 
     # Check authentication status
-    auth_ok = False
-    if auth_alignment:
-        auth_ok = auth_alignment.get("effective_dmarc") in ["PASS", "PASS (Delegated ESP)"]
+    auth_ok = _is_auth_ok(auth_alignment)
     if not auth_ok:
         auth_res = str(headers.get("authentication-results", "")).lower()
         if "dmarc=pass" in auth_res or ("spf=pass" in auth_res and "dkim=pass" in auth_res):
@@ -274,12 +281,14 @@ def evaluate_rules(
 
     # 8. Cryptographic DMARC Alignment Bypass
     if auth_alignment:
-        eff_dmarc = auth_alignment.get("effective_dmarc", "")
-        if "Alignment Bypass" in eff_dmarc or auth_alignment.get("threat_detected"):
+        eff_dmarc = auth_alignment.get("effective_dmarc", "") if isinstance(auth_alignment, dict) else getattr(auth_alignment, "effective_dmarc", "")
+        threat_det = auth_alignment.get("threat_detected", False) if isinstance(auth_alignment, dict) else getattr(auth_alignment, "threat_detected", False)
+        if threat_det or "Alignment Bypass" in eff_dmarc:
+            d_reason = auth_alignment.get("dmarc_reason") if isinstance(auth_alignment, dict) else getattr(auth_alignment, "dmarc_reason", None)
             findings.append({
                 "rule_id": "RULE-014",
                 "finding": "DMARC Alignment Failure / Domain Spoofing",
-                "evidence": auth_alignment.get("dmarc_reason", "Header-From domain unaligned with SPF/DKIM"),
+                "evidence": d_reason or "Header-From domain unaligned with SPF/DKIM",
                 "severity": "HIGH",
                 "explanation": "Sender attempted SPF/DKIM bypass using third-party signing domain while faking visible Header-From."
             })
@@ -477,7 +486,7 @@ def evaluate_rules(
         # RULE-024: Commercial VPN / Anonymizing Proxy
         vpn_status = _get_f(vpn_ind, "status")
         if vpn_status == "DETECTED":
-            auth_ok = auth_alignment and getattr(auth_alignment, "effective_dmarc", "") in ["PASS", "PASS (Delegated ESP)"]
+            auth_ok = _is_auth_ok(auth_alignment)
             vpn_sev = "LOW" if (auth_ok or is_newsletter) else "MEDIUM"
             findings.append({
                 "rule_id": "RULE-024",
@@ -501,7 +510,7 @@ def evaluate_rules(
         # RULE-025: Cloud-Hosted Infrastructure with Identity Anomaly
         is_cloud = _get_f(cloud_ind, "is_cloud_hosted", False)
         if is_cloud:
-            auth_ok = auth_alignment and getattr(auth_alignment, "effective_dmarc", "") in ["PASS", "PASS (Delegated ESP)"]
+            auth_ok = _is_auth_ok(auth_alignment)
             is_lookalike = lookalike_analysis and getattr(lookalike_analysis, "is_lookalike", False)
             c_prov = _get_f(cloud_ind, "provider", "Cloud")
             if is_lookalike or not auth_ok:
@@ -583,9 +592,7 @@ def calculate_hybrid_risk(
     risk_score = "LOW"
     reasons = []
 
-    auth_ok = False
-    if auth_alignment:
-        auth_ok = auth_alignment.get("effective_dmarc") in ["PASS", "PASS (Delegated ESP)"]
+    auth_ok = _is_auth_ok(auth_alignment)
 
     high_rules = sum(1 for f in rule_findings if f.get("severity") == "HIGH")
     medium_rules = sum(1 for f in rule_findings if f.get("severity") == "MEDIUM")

@@ -8,6 +8,14 @@ import { NextRequest } from "next/server";
 import { getAuthenticatedUser } from "@/lib/supabase/route";
 import { apiSuccess, apiError } from "@/lib/api-response";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const NO_CACHE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+  Pragma: "no-cache",
+};
+
 function maskEmail(email: string): string {
   if (!email || !email.includes("@")) return email;
   const [local, domain] = email.split("@");
@@ -56,7 +64,7 @@ export async function GET(request: NextRequest) {
         worker: null,
         telemetry: null,
         messages: [],
-      });
+      }, 200, NO_CACHE_HEADERS);
     }
 
     const url = new URL(request.url);
@@ -169,7 +177,7 @@ export async function GET(request: NextRequest) {
       high_critical: highCritical,
       duplicates: checkpoint?.duplicates_skipped || 0,
       processing_errors: checkpoint?.errors_count || 0,
-      last_poll: checkpoint?.last_poll_time || checkpoint?.last_scan_timestamp || (events.length > 0 ? new Date().toISOString() : "Never"),
+      last_poll: checkpoint?.last_scan_timestamp || (events.length > 0 ? (checkpoint?.last_processed_date || events[0]?.created_at || new Date().toISOString()) : "Never"),
       last_uid: derivedLastUid,
     };
 
@@ -200,7 +208,7 @@ export async function GET(request: NextRequest) {
         : null,
       telemetry,
       messages: events,
-    });
+    }, 200, NO_CACHE_HEADERS);
   } catch (err: any) {
     return apiError("INTERNAL_ERROR", "Failed to retrieve Live Mail state.", 500);
   }
@@ -216,10 +224,10 @@ export async function POST(request: NextRequest) {
 
     const nowIso = new Date().toISOString();
 
-    // Touch checkpoint and worker
+    // Touch checkpoint and worker using strictly valid schema columns
     await Promise.all([
       client.from("sentinel_workers").update({ last_heartbeat: nowIso, updated_at: nowIso }).eq("user_id", user.id),
-      client.from("sentinel_checkpoints").update({ last_poll_time: nowIso, last_scan_timestamp: nowIso }).eq("user_id", user.id),
+      client.from("sentinel_checkpoints").update({ last_scan_timestamp: nowIso }).eq("user_id", user.id),
     ]);
 
     return GET(request);

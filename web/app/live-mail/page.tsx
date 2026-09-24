@@ -1,9 +1,10 @@
 // web/app/live-mail/page.tsx
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   fetchLiveMail,
+  fetchLiveMailFeed,
   fetchLiveMailTelemetry,
   fetchLiveMailEmail,
   disconnectMailbox,
@@ -54,6 +55,10 @@ export default function LiveMailPage() {
   const [pollingNow, setPollingNow] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
+  const isFetchingRef = useRef(false);
+  const isAutoPollingRef = useRef(false);
+  const lastRealPollRef = useRef<number>(0);
+
   const sortNewestFirst = (list: EmailSummary[]): EmailSummary[] => {
     return [...list].sort((a, b) => {
       const timeA = Date.parse(a.date);
@@ -63,25 +68,52 @@ export default function LiveMailPage() {
     });
   };
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setError(false);
-    Promise.all([fetchLiveMailTelemetry(), fetchLiveMail(fetchLimit)])
-      .then(([t, e]) => {
-        setTelemetry(t);
-        setEmails(sortNewestFirst(e));
-      })
-      .catch(() => setError(true))
-      .finally(() => setLoading(false));
-  }, [fetchLimit]);
+  const load = useCallback(async (isInitial = false) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    if (isInitial) {
+      setLoading(true);
+      setError(false);
+    }
+    try {
+      const feed = await fetchLiveMailFeed(fetchLimit);
+      setTelemetry(feed.telemetry);
+      setEmails(sortNewestFirst(feed.emails));
+
+      // Auto-trigger real IMAP poll when stale (>30s since last real poll)
+      // This runs inside the same 2s loop — no duplicate intervals
+      const now = Date.now();
+      if (
+        !isAutoPollingRef.current &&
+        !pollingNow &&
+        now - lastRealPollRef.current > 30000
+      ) {
+        isAutoPollingRef.current = true;
+        lastRealPollRef.current = now;
+        pollLiveMailNow()
+          .catch(() => {
+            // Silent: auto-poll failures do not surface to user
+          })
+          .finally(() => {
+            isAutoPollingRef.current = false;
+          });
+      }
+    } catch {
+      if (isInitial) setError(true);
+    } finally {
+      if (isInitial) setLoading(false);
+      isFetchingRef.current = false;
+    }
+  }, [fetchLimit, pollingNow]);
 
   const handlePollNow = async () => {
     setPollingNow(true);
     try {
-      const refreshedTelemetry = await pollLiveMailNow();
-      setTelemetry(refreshedTelemetry);
-      const freshEmails = await fetchLiveMail(fetchLimit);
-      setEmails(sortNewestFirst(freshEmails));
+      await pollLiveMailNow();
+      lastRealPollRef.current = Date.now();
+      const feed = await fetchLiveMailFeed(fetchLimit);
+      setTelemetry(feed.telemetry);
+      setEmails(sortNewestFirst(feed.emails));
       setActionFeedback({
         type: "success",
         message: "Live mail polled successfully. Mailbox telemetry synchronized.",
@@ -96,18 +128,17 @@ export default function LiveMailPage() {
     }
   };
 
+  // Single unified 2-second polling loop
+  // - Reads cached DB state every 2s (fast, no IMAP)
+  // - Conditionally triggers real IMAP poll when >30s stale (automatic Gmail detection)
+  // - No duplicate intervals, cleanup on unmount
   useEffect(() => {
-    load();
+    load(true);
     const interval = setInterval(() => {
-      Promise.all([fetchLiveMailTelemetry(), fetchLiveMail(fetchLimit)])
-        .then(([t, e]) => {
-          setTelemetry(t);
-          setEmails(sortNewestFirst(e));
-        })
-        .catch(() => {});
-    }, 10000);
+      load(false);
+    }, 2000);
     return () => clearInterval(interval);
-  }, [load, fetchLimit]);
+  }, [load]);
 
   const inspectEmail = async (uid: string) => {
     setDetailLoading(true);

@@ -19,6 +19,8 @@ export type ApiErrorCode =
   | "USER_EXISTS"
   | "REGISTRATION_FAILED"
   | "RATE_LIMITED"
+  | "DECRYPTION_FAILED"
+  | "IMAP_ERROR"
   | "INTERNAL_ERROR";
 
 export function apiSuccess<T>(data: T, status = 200, headers?: HeadersInit) {
@@ -35,18 +37,27 @@ export function apiError(
   code: ApiErrorCode,
   message: string,
   status = 400,
-  details?: Record<string, unknown>
+  detailsOrHeaders?: Record<string, unknown> | HeadersInit
 ) {
-  // Strip any accidental credential or token parameters from details
-  const sanitizedDetails = details ? { ...details } : undefined;
-  if (sanitizedDetails) {
-    const forbiddenKeys = [
-      "password", "token", "jwt", "key", "secret", "cookie",
-      "authorization", "service_role", "master_key", "private_key"
-    ];
-    for (const k of Object.keys(sanitizedDetails)) {
-      if (forbiddenKeys.some((f) => k.toLowerCase().includes(f))) {
-        delete sanitizedDetails[k];
+  // Determine if the 4th argument is response headers or error details
+  let sanitizedDetails: Record<string, unknown> | undefined;
+  let headers: HeadersInit | undefined;
+
+  if (detailsOrHeaders) {
+    // If it looks like HTTP headers (has Cache-Control or Pragma), treat as headers
+    const asRecord = detailsOrHeaders as Record<string, unknown>;
+    if (asRecord["Cache-Control"] || asRecord["Pragma"]) {
+      headers = detailsOrHeaders as HeadersInit;
+    } else {
+      sanitizedDetails = { ...asRecord };
+      const forbiddenKeys = [
+        "password", "token", "jwt", "key", "secret", "cookie",
+        "authorization", "service_role", "master_key", "private_key"
+      ];
+      for (const k of Object.keys(sanitizedDetails)) {
+        if (forbiddenKeys.some((f) => k.toLowerCase().includes(f))) {
+          delete sanitizedDetails[k];
+        }
       }
     }
   }
@@ -60,6 +71,6 @@ export function apiError(
         details: sanitizedDetails,
       },
     },
-    { status }
+    { status, headers }
   );
 }

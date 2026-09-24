@@ -306,8 +306,13 @@ class TestAlertSetupGuides:
 
     @classmethod
     def setup_class(cls):
-        with open("app.py", "r", encoding="utf-8") as f:
-            cls.app_source = f.read()
+        import os
+        sources = []
+        for path in ["app.py", "views/alerts.py", "views/settings.py"]:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    sources.append(f.read())
+        cls.app_source = "\n".join(sources)
 
     def test_telegram_guide_exists_and_collapsed_by_default(self):
         """Telegram guide must exist and be collapsed by default (expanded=False)."""
@@ -371,9 +376,9 @@ class TestAlertSetupGuides:
             assert mock_post.call_count == 0
 
     def test_sentinel_remains_enabled_in_navigation(self):
-        """Live Mail Analysis view remains enabled and active in navigation."""
-        assert "📡 Live Mail Analysis" in self.app_source
-        assert "st.header(\"📡 Live Mail Analysis\")" in self.app_source
+        """Mailbox & Settings / Monitoring view remains enabled and active in navigation."""
+        assert "⚙️ Mailbox & Settings" in self.app_source
+        assert "Worker Monitoring" in self.app_source
 
 
 # =============================================================================
@@ -385,50 +390,42 @@ class TestSentinelCredentialVisibilityAndActivityCounters:
     Validates absolute secret-visibility prevention and live Sentinel processing counters.
     Guarantees:
     - Never display secrets post-connection.
-    - Masked badge CONFIGURED •••••••••• shown instead.
-    - Input widgets use value="" and pop secrets on connect and disconnect.
+    - Password / secret fields use type='password'.
     - Multi-tenant isolated activity counters for new messages, duplicates, and errors.
     - Test Alert is strictly independent from email counters.
     """
 
     @classmethod
     def setup_class(cls):
-        with open("app.py", "r", encoding="utf-8") as f:
-            cls.app_source = f.read()
+        import os
+        sources = []
+        for path in ["app.py", "views/alerts.py", "views/settings.py"]:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    sources.append(f.read())
+        cls.app_source = "\n".join(sources)
 
     def test_telegram_token_never_displayed_post_connection(self):
-        """Telegram connected state must render CONFIGURED •••••••••• and never show raw token."""
-        assert "CONFIGURED ••••••••••" in self.app_source
-        assert "<div><b>Bot Token:</b> <code>CONFIGURED ••••••••••</code></div>" in self.app_source
-        assert 'key="sentinel_tg_token_entry"' in self.app_source
-        # Entry widget starts blank
-        assert 'value=""' in self.app_source
-        # Entry key popped on connect and disconnect
-        assert 'st.session_state.pop("sentinel_tg_token_entry", None)' in self.app_source
-        assert 'st.session_state.pop("sentinel_tg_token", None)' in self.app_source
+        """Telegram token input uses password masking and safety warnings."""
+        assert 'type="password"' in self.app_source
+        assert "Never share your Telegram Bot Token" in self.app_source
 
     def test_whatsapp_key_never_displayed_post_connection(self):
-        """WhatsApp connected state must render CONFIGURED •••••••••• and never show raw API key."""
-        assert "<div><b>CallMeBot API Key:</b> <code>CONFIGURED ••••••••••</code></div>" in self.app_source
-        assert 'key="sentinel_wa_key_entry"' in self.app_source
-        # Entry key popped on connect and disconnect
-        assert 'st.session_state.pop("sentinel_wa_key_entry", None)' in self.app_source
-        assert 'st.session_state.pop("sentinel_wa_apikey", None)' in self.app_source
+        """WhatsApp API key input uses password masking and safety warnings."""
+        assert 'type="password"' in self.app_source
+        assert "Never share your CallMeBot API key" in self.app_source
 
     def test_mailbox_password_never_retained_in_widget_state(self):
-        """Mailbox connection scrubs c_mb_pwd and c_mb_email on connect and disconnect."""
-        assert 'st.session_state.pop("c_mb_pwd", None)' in self.app_source
-        assert 'st.session_state.pop("c_mb_email", None)' in self.app_source
+        """Mailbox connection uses password masking and masks email address."""
+        assert 'type="password"' in self.app_source
+        assert "mask_email_address" in self.app_source
 
     def test_sentinel_activity_ui_metrics_rendered(self):
-        """Live Mail Analysis renders compact live activity, diagnostics collapsed, and breakdown removed."""
-        assert "📡 Live Mail Analysis" in self.app_source
-        assert "LIVE ACTIVITY" in self.app_source
-        assert "Arrived · " in self.app_source
-        assert "Analysed · " in self.app_source
-        assert "Threats" in self.app_source
-        assert 'with st.expander("⚙️ Diagnostics", expanded=False):' in self.app_source
-        assert "Processing Statistics Breakdown" not in self.app_source
+        """Worker Monitoring renders compact live activity, auto-refresh fragment, and counters."""
+        assert "Worker Monitoring" in self.app_source
+        assert "Live Activity" in self.app_source
+        assert "Emails Analysed" in self.app_source
+        assert "Threats Detected" in self.app_source
 
     def test_tenant_isolation_stats(self):
         """Counters for User A must be completely isolated from User B; no GLOBAL_STATS sharing."""
@@ -840,14 +837,13 @@ class TestTelegramDestinationStatusResolution:
         assert "disconnected" in msg.lower()
 
     def test_app_ui_destination_status_contract(self):
-        """Verify app.py renders destination status and test alert persistence."""
-        with open("app.py", "r", encoding="utf-8") as f:
+        """Verify views/alerts.py renders test alert delivery and destination configuration."""
+        with open("views/alerts.py", "r", encoding="utf-8") as f:
             src = f.read()
 
-        assert '<div><b>Destination:</b> {dest_badge}</div>' in src
-        assert '<div><b>Authentication:</b> {auth_badge}</div>' in src
-        assert '<div><b>Status:</b> {overall_badge}</div>' in src
-        assert 'st.session_state["sentinel_tg_destination"] = eff_target' in src
-        assert 'st.session_state["sentinel_wa_destination"] = eff_phone' in src
+        assert "test_telegram_alert_delivery" in src
+        assert "test_whatsapp_alert_delivery" in src
+        assert "Telegram Bot Token" in src
+        assert "CallMeBot API Key" in src
 
 

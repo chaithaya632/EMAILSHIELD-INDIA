@@ -92,6 +92,21 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
     header_from_domain = extract_domain(from_header)
     envelope_from_domain = extract_domain(return_path)
 
+    if not envelope_from_domain:
+        # Attempt extraction from Authentication-Results (smtp.mailfrom or envelope-from)
+        mf_match = re.search(r'(?:smtp\.mailfrom|envelope-from)=<?([^\s;>]+)', auth_header, re.IGNORECASE)
+        if mf_match:
+            raw_mf = mf_match.group(1).strip('"\'')
+            envelope_from_domain = extract_domain(raw_mf) or (raw_mf.split("@")[-1].lower().strip('.'))
+        if not envelope_from_domain:
+            # Attempt extraction from Received-SPF
+            received_spf_val = headers.get("received-spf", "")
+            rec_spf_str = " ".join(received_spf_val) if isinstance(received_spf_val, list) else str(received_spf_val)
+            spf_mf_match = re.search(r'envelope-from=<?([^\s;>]+)', rec_spf_str, re.IGNORECASE)
+            if spf_mf_match:
+                raw_spf_mf = spf_mf_match.group(1).strip('"\'')
+                envelope_from_domain = extract_domain(raw_spf_mf) or (raw_spf_mf.split("@")[-1].lower().strip('.'))
+
     dkim_signing_domain = ""
     dkim_d_match = re.search(r'\bd=([\w\.-]+)', dkim_header, re.IGNORECASE)
     if dkim_d_match:
@@ -142,6 +157,20 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
             if gw_prefix == header_from_domain or get_org_domain(gw_prefix) == get_org_domain(header_from_domain):
                 dkim_aligned = True
 
+    if not header_from_domain or not envelope_from_domain:
+        spf_alignment_status = "NOT_DETERMINABLE"
+    elif spf_aligned:
+        spf_alignment_status = "ALIGNED"
+    else:
+        spf_alignment_status = "UNALIGNED"
+
+    if not header_from_domain or not dkim_signing_domain:
+        dkim_alignment_status = "NOT_DETERMINABLE"
+    elif dkim_aligned:
+        dkim_alignment_status = "ALIGNED"
+    else:
+        dkim_alignment_status = "UNALIGNED"
+
     # Check if this email is a recognized newsletter or bulk mailing
     is_bulk_newsletter = bool(
         headers.get("list-unsubscribe") or
@@ -158,7 +187,10 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
     # Effective DMARC Verdict
     spf_valid_for_dmarc = (spf_result == "pass" and spf_aligned)
     dkim_valid_for_dmarc = (dkim_result == "pass" and dkim_aligned)
-    
+
+    has_unaligned_spf = (spf_result == "pass" and bool(envelope_from_domain) and not spf_aligned)
+    has_unaligned_dkim = (dkim_result == "pass" and bool(dkim_signing_domain) and not dkim_aligned)
+
     if dmarc_recorded == "pass" or spf_valid_for_dmarc or dkim_valid_for_dmarc:
         effective_dmarc = "PASS"
         dmarc_reason = "Email passed cryptographic authentication aligned with visible From domain."
@@ -172,7 +204,7 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
         effective_dmarc = "PASS (Delegated ESP)"
         dmarc_reason = f"Authorized bulk email/newsletter delivery via Email Service Provider ('{dkim_signing_domain or envelope_from_domain}')."
         threat_detected = False
-    elif (spf_result == "pass" or dkim_result == "pass") and not (spf_aligned or dkim_aligned):
+    elif has_unaligned_spf or has_unaligned_dkim:
         effective_dmarc = "FAIL (Alignment Bypass)"
         dmarc_reason = (
             f"Sender passed SPF/DKIM on third-party domain "
@@ -180,6 +212,10 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
             f"but domain is unaligned with visible Header-From ('{header_from_domain}')."
         )
         threat_detected = True
+    elif spf_result == "pass" or dkim_result == "pass":
+        effective_dmarc = "PASS (Unverified Alignment)"
+        dmarc_reason = "Cryptographic pass recorded, but alignment identity is not determinable from available headers."
+        threat_detected = False
     elif spf_result == "fail" or dkim_result == "fail":
         effective_dmarc = "FAIL"
         dmarc_reason = "Cryptographic signature or SPF verification explicitly failed."
@@ -206,6 +242,8 @@ def evaluate_auth_and_alignment(headers: Dict[str, Any]) -> Dict[str, Any]:
         "dmarc_recorded": dmarc_recorded.upper(),
         "spf_aligned": spf_aligned,
         "dkim_aligned": dkim_aligned,
+        "spf_alignment_status": spf_alignment_status,
+        "dkim_alignment_status": dkim_alignment_status,
         "effective_dmarc": effective_dmarc,
         "dmarc_reason": dmarc_reason,
         "threat_detected": threat_detected,
