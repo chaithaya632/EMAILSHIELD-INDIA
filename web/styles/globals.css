@@ -1,0 +1,141 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-color: #24354B;
+  }
+
+  html {
+    font-family: 'DM Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: #08111D;
+    color: #D9E4F1;
+    margin: 0;
+    overflow-x: hidden;
+    min-height: 100vh;
+  }
+
+  ::selection {
+    background-color: rgba(43, 183, 169, 0.28);
+    color: #F4F7FB;
+  }
+
+  /* Custom scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #08111D;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #30445C;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3E5874;
+  }
+
+  /* Focus states */
+  *:focus-visible {
+    outline: 2px solid #2BB7A9;
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  *:focus:not(:focus-visible) {
+    outline: none;
+  }
+}
+
+@layer components {
+  .skeleton {
+    background: linear-gradient(90deg, #142337 25%, #1D3148 50%, #142337 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s linear infinite;
+    border-radius: 4px;
+  }
+
+  .card-surface {
+    background-color: #101D2D;
+    border: 1px solid #24354B;
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(2, 9, 18, 0.14);
+  }
+
+  .card-surface-2 {
+    background-color: #142438;
+    border: 1px solid #263A52;
+    border-radius: 10px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    color: #91A6BB;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: background-color 0.15s ease, color 0.15s ease;
+    cursor: pointer;
+  }
+
+  .nav-item:hover {
+    background-color: #152840;
+    color: #E5EEF7;
+  }
+
+  .nav-item-active {
+    background-color: rgba(43, 183, 169, 0.12);
+    color: #63D4C4;
+    border-left: 2px solid #2BB7A9;
+  }
+
+  .nav-item-active:hover {
+    background-color: rgba(43, 183, 169, 0.18);
+    color: #8AE4D8;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+
+  .grid-bg {
+    background-image:
+      linear-gradient(rgba(37, 63, 89, 0.42) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(37, 63, 89, 0.42) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .ops-eyebrow {
+    color: #6B8299;
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .ops-rule {
+    height: 1px;
+    background: linear-gradient(90deg, rgba(43, 183, 169, 0.6), rgba(43, 183, 169, 0));
+  }
+}

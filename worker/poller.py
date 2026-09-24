@@ -540,6 +540,27 @@ class MailboxPoller:
                         "verdict": verdict or event_cat,
                     })
 
+                    # Persist event into forensic case store for unified SOC tracking
+                    try:
+                        from core.case_store import save_case
+                        from core.supabase_client import get_supabase_client
+                        sb_client = get_supabase_client()
+                        case_dict = {
+                            "case_id": f"LIVE-{uid}",
+                            "subject": subject or "(No Subject)",
+                            "sender": sender or "Unknown",
+                            "threat_verdict": verdict or event_cat,
+                            "risk_score": risk_score if risk_score is not None else (75 if "High" in event_cat else (45 if "Suspicious" in event_cat else 15)),
+                            "case_severity": "HIGH" if "High" in event_cat else ("MEDIUM" if "Suspicious" in event_cat else "LOW"),
+                            "status": "Open",
+                            "indicators": extracted_iocs or [],
+                            "content_type": "text/plain",
+                            "source": "live_mail",
+                        }
+                        save_case(case_dict, user_id=tenant_user_id, client=sb_client)
+                    except Exception as save_err:
+                        logger.debug("Optional case persistence skipped for UID %d: %s", uid, save_err)
+
                     # Advance checkpoint strictly upon successful processing
                     self.checkpoint_store.advance_checkpoint(
                         user_id=tenant_user_id,
