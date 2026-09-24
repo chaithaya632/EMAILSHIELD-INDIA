@@ -10,6 +10,8 @@ export type ApiErrorCode =
   | "UNAUTHENTICATED"
   | "FORBIDDEN"
   | "NOT_FOUND"
+  | "BAD_REQUEST"
+  | "NO_MAILBOX"
   | "PAYLOAD_TOO_LARGE"
   | "INVALID_EMAIL"
   | "INVALID_PASSWORD"

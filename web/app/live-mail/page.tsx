@@ -8,6 +8,7 @@ import {
   fetchLiveMailEmail,
   disconnectMailbox,
   testMailboxConnection,
+  pollLiveMailNow,
 } from "@/lib/api";
 import type { EmailSummary, EmailDetail, LiveMailTelemetry } from "@/lib/types/soc";
 import { Card, CardHeader } from "@/components/ui/Card";
@@ -50,7 +51,17 @@ export default function LiveMailPage() {
   const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [disconnectDialogOpen, setDisconnectDialogOpen] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [pollingNow, setPollingNow] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  const sortNewestFirst = (list: EmailSummary[]): EmailSummary[] => {
+    return [...list].sort((a, b) => {
+      const timeA = Date.parse(a.date);
+      const timeB = Date.parse(b.date);
+      if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) return timeB - timeA;
+      return (Number(b.uid) || 0) - (Number(a.uid) || 0);
+    });
+  };
 
   const load = useCallback(() => {
     setLoading(true);
@@ -58,11 +69,32 @@ export default function LiveMailPage() {
     Promise.all([fetchLiveMailTelemetry(), fetchLiveMail(fetchLimit)])
       .then(([t, e]) => {
         setTelemetry(t);
-        setEmails(e);
+        setEmails(sortNewestFirst(e));
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
   }, [fetchLimit]);
+
+  const handlePollNow = async () => {
+    setPollingNow(true);
+    try {
+      const refreshedTelemetry = await pollLiveMailNow();
+      setTelemetry(refreshedTelemetry);
+      const freshEmails = await fetchLiveMail(fetchLimit);
+      setEmails(sortNewestFirst(freshEmails));
+      setActionFeedback({
+        type: "success",
+        message: "Live mail polled successfully. Mailbox telemetry synchronized.",
+      });
+    } catch (err: any) {
+      setActionFeedback({
+        type: "error",
+        message: err?.message || "Failed to trigger live mail poll.",
+      });
+    } finally {
+      setPollingNow(false);
+    }
+  };
 
   useEffect(() => {
     load();
@@ -70,7 +102,7 @@ export default function LiveMailPage() {
       Promise.all([fetchLiveMailTelemetry(), fetchLiveMail(fetchLimit)])
         .then(([t, e]) => {
           setTelemetry(t);
-          setEmails(e);
+          setEmails(sortNewestFirst(e));
         })
         .catch(() => {});
     }, 10000);
@@ -148,11 +180,12 @@ export default function LiveMailPage() {
               </button>
             )}
             <button
-              onClick={load}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-soc-surface-2 text-slate-300 hover:text-white hover:bg-soc-surface-3 transition-colors border border-soc-border"
+              onClick={handlePollNow}
+              disabled={pollingNow || !isConnected}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-soc-surface-2 text-slate-300 hover:text-white hover:bg-soc-surface-3 transition-colors border border-soc-border disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <RefreshCw className="h-3.5 w-3.5" />
-              <span>Poll Now</span>
+              <RefreshCw className={`h-3.5 w-3.5 ${pollingNow ? "animate-spin" : ""}`} />
+              <span>{pollingNow ? "Polling..." : "Poll Now"}</span>
             </button>
           </div>
         }

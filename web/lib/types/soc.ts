@@ -52,6 +52,82 @@ export interface EmailDetail {
   analysis_state: AnalysisState;
   timeline: TimelineEvent[];
   evidence: EvidenceItem[];
+
+  // Enhanced Forensic Capabilities
+  sha256?: string;
+  case_id?: string;
+  sender_domain?: string;
+  ai_reasoning?: string;
+  plain_language_summary?: string;
+  headers_text?: string;
+  auth_alignment?: {
+    header_from_domain: string;
+    envelope_from: string;
+    envelope_from_domain: string;
+    dkim_signing_domain: string;
+    spf_result: string;
+    dkim_result: string;
+    dmarc_result: string;
+    spf_aligned: boolean;
+    dkim_aligned: boolean;
+    spf_alignment_status: string;
+    dkim_alignment_status: string;
+    effective_dmarc: string;
+    threat_detected: boolean;
+    reason: string;
+  };
+  infrastructure_intel?: {
+    origin_ip: string;
+    flag: string;
+    country: string;
+    region: string;
+    city: string;
+    asn: string;
+    isp: string;
+    is_identified: boolean;
+    cloud_provider: string;
+    vpn_indicator: string;
+    tor_indicator: string;
+    open_relay_indicator: string;
+    botnet_indicator: string;
+    threat_feed_match: string;
+  };
+  domain_reputation?: {
+    domain: string;
+    registrar: string;
+    creation_date: string;
+    domain_age_days: number | null;
+    is_newly_registered: boolean;
+  };
+  indian_financial?: {
+    detected: boolean;
+    upi_handles: string[];
+    ifsc_codes: string[];
+    urgency_lures: string[];
+    fraud_keywords: string[];
+  };
+  findings?: Array<{
+    rule_id: string;
+    title: string;
+    finding: string;
+    severity: Severity;
+    score_penalty: number;
+  }>;
+  hop_transit?: Array<{
+    hop: number;
+    from_mta: string;
+    by_mta: string;
+    ip: string;
+    timestamp: string;
+    delay_seconds: number;
+  }>;
+  url_threats?: Array<{
+    url: string;
+    defanged_url: string;
+    domain: string;
+    threat_category: string;
+    risk_level: string;
+  }>;
 }
 
 export interface Indicator {
@@ -64,6 +140,7 @@ export interface Indicator {
 export interface Attachment {
   filename: string;
   content_type: string;
+  mime_type?: string;
   size: number;
   hash?: string;
   risk?: Severity;

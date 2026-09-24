@@ -148,69 +148,107 @@ export async function fetchDashboard(): Promise<DashboardData> {
 // =========================================================================
 // 2. ANALYZE EMAIL
 // =========================================================================
+export function mapForensicDataToEmailDetail(data: any, fallbackSubject = "Email Analysis"): EmailDetail {
+  const findings = data.findings || [];
+  const urls: string[] = (data.urls || []).map((u: any) => typeof u === "string" ? u : u.url);
+  const sev = normalizeSeverity(data.threat_verdict || data.case_severity || data.risk_score);
+
+  return {
+    uid: String(data.uid || data.case_id || "ANALYSIS-RESULT"),
+    case_id: data.case_id || (data.uid ? `CASE-${data.uid}` : undefined),
+    sha256: data.sha256,
+    sender: data.sender || "Unknown Sender",
+    sender_domain: data.sender_domain,
+    recipient: data.recipient || "soc@emailshield.in",
+    subject: data.subject || fallbackSubject,
+    date: data.date || new Date().toISOString(),
+    body_preview: data.body_preview || `SHA-256 Digest: ${data.sha256 || "N/A"}\nVerdict: ${data.threat_verdict || "EVALUATED"}`,
+    headers: data.raw_headers || data.headers || {},
+    headers_text: data.headers_text,
+    ai_reasoning: data.ai_reasoning,
+    plain_language_summary: data.plain_language_summary,
+    authentication: {
+      spf: data.auth_alignment?.spf_result || data.authentication?.spf || "none",
+      dkim: data.auth_alignment?.dkim_result || data.authentication?.dkim || "none",
+      dmarc: data.auth_alignment?.dmarc_result || data.authentication?.dmarc || "none",
+    },
+    auth_alignment: data.auth_alignment,
+    infrastructure_intel: data.infrastructure_intel,
+    domain_reputation: data.domain_reputation,
+    indian_financial: data.indian_financial,
+    urls,
+    url_threats: data.url_threats || data.urls || [],
+    indicators: data.indicators || [],
+    attachments: data.attachments || [],
+    findings: findings.map((f: any) => ({
+      ...f,
+      severity: normalizeSeverity(f.severity),
+    })),
+    hop_transit: data.hop_transit || [],
+    risk_score: data.risk_score || 0,
+    risk_status: sev,
+    analysis_state: "completed",
+    timeline: data.timeline || [],
+    evidence: data.evidence || [
+      {
+        id: `EV-HASH-${data.case_id || "1"}`,
+        type: "hash",
+        description: "Forensic SHA-256 Digest of RFC822 Stream",
+        hash: data.sha256,
+        collected_at: data.date || new Date().toISOString(),
+      },
+    ],
+  };
+}
+
 export async function analyzeEmail(file: File): Promise<EmailDetail> {
   const formData = new FormData();
-  formData.append('file', file);
+  formData.append("file", file);
 
-  const res = await fetch('/api/analyze', {
-    method: 'POST',
+  const res = await fetch("/api/analyze", {
+    method: "POST",
     body: formData,
   });
 
   if (!res.ok) {
     const errText = await res.text().catch(() => res.statusText);
-    throw new ApiError(res.status, errText || 'Analysis failed');
+    throw new ApiError(res.status, errText || "Analysis failed");
   }
 
   const json = await res.json();
-  const data = json?.data || json;
+  return mapForensicDataToEmailDetail(json?.data || json, file.name);
+}
 
-  const findings = data.findings || [];
-  const urls: string[] = data.urls || [];
-  const sev = normalizeSeverity(data.verdict || data.risk_score);
+export async function analyzeSample(sampleId: string): Promise<EmailDetail> {
+  const res = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sample_id: sampleId }),
+  });
 
-  return {
-    uid: data.case_id || 'ANALYSIS-RESULT',
-    sender: data.sender || 'Unknown Sender',
-    recipient: 'soc@emailshield.in',
-    subject: data.subject || file.name,
-    date: new Date().toISOString(),
-    body_preview: `SHA-256 Digest: ${data.sha256 || 'N/A'}\nVerdict: ${data.verdict || 'EVALUATED'}\nFindings count: ${findings.length}`,
-    headers: {
-      from: data.sender || '',
-      subject: data.subject || '',
-      'x-forensic-sha256': data.sha256 || '',
-    },
-    authentication: {
-      spf: findings.some((f: any) => f.rule_id === 'RULE-014') ? 'fail' : 'pass',
-      dkim: findings.some((f: any) => f.rule_id === 'RULE-014') ? 'fail' : 'pass',
-      dmarc: findings.some((f: any) => f.rule_id === 'RULE-014') ? 'fail' : 'pass',
-    },
-    urls,
-    indicators: urls.map((u: string) => ({
-      type: 'url',
-      value: u,
-      risk: sev,
-    })),
-    attachments: [],
-    risk_score: data.risk_score || 0,
-    risk_status: sev,
-    analysis_state: 'completed',
-    timeline: findings.map((f: any) => ({
-      timestamp: new Date().toISOString(),
-      event: f.rule_id,
-      detail: f.finding,
-    })),
-    evidence: [
-      {
-        id: 'EV-HASH-1',
-        type: 'hash',
-        description: 'Forensic SHA-256 Digest of RFC822 Stream',
-        hash: data.sha256,
-        collected_at: new Date().toISOString(),
-      },
-    ],
-  };
+  if (!res.ok) {
+    const errText = await res.text().catch(() => res.statusText);
+    throw new ApiError(res.status, errText || "Sample analysis failed");
+  }
+
+  const json = await res.json();
+  return mapForensicDataToEmailDetail(json?.data || json, `Sample: ${sampleId}`);
+}
+
+export async function analyzeLiveMessage(uid: string): Promise<EmailDetail> {
+  const res = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message_uid: uid }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => res.statusText);
+    throw new ApiError(res.status, errText || "Live message analysis failed");
+  }
+
+  const json = await res.json();
+  return mapForensicDataToEmailDetail(json?.data || json, `Live UID ${uid}`);
 }
 
 // =========================================================================
@@ -302,7 +340,23 @@ export async function disconnectMailbox(): Promise<{ success: boolean; message: 
   });
 }
 
+export async function pollLiveMailNow(): Promise<LiveMailTelemetry> {
+  await apiFetch<any>('/api/live-mail/poll', {
+    method: 'POST',
+  });
+  return fetchLiveMailTelemetry();
+}
+
 export async function fetchLiveMailEmail(uid: string): Promise<EmailDetail> {
+  try {
+    const res = await apiFetch<any>(`/api/live-mail/${uid}`);
+    if (res) {
+      return mapForensicDataToEmailDetail(res.data || res, `Live Monitored Email UID ${uid}`);
+    }
+  } catch {
+    // Fallback to list lookup if UID route unavailable
+  }
+
   const raw = await apiFetch<any>('/api/live-mail?limit=100');
   const messages = raw?.messages || [];
   const found = messages.find((m: any) => String(m.message_uid || m.id) === String(uid));
@@ -313,6 +367,7 @@ export async function fetchLiveMailEmail(uid: string): Promise<EmailDetail> {
 
   return {
     uid: String(uid),
+    case_id: `LIVE-${uid}`,
     sender,
     recipient: 'sentinel.mailbox@authorized.org',
     subject,

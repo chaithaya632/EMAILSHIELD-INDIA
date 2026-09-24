@@ -125,6 +125,24 @@ export async function GET(request: NextRequest) {
       events = [];
     }
 
+    // STRICT GMAIL INBOX ORDERING: Sort by parsed email date descending (newest email first)
+    // with numeric message_uid descending fallback.
+    events.sort((a: any, b: any) => {
+      const timeA = a.created_at ? Date.parse(a.created_at) : NaN;
+      const timeB = b.created_at ? Date.parse(b.created_at) : NaN;
+
+      if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) {
+        return timeB - timeA; // Newest date first
+      }
+
+      const uidA = Number(a.message_uid) || 0;
+      const uidB = Number(b.message_uid) || 0;
+      return uidB - uidA;
+    });
+
+    // Enforce limit after strict date ordering
+    events = events.slice(0, limit);
+
     // Calculate authoritative counters from checkpoint and events
     let threats = 0;
     let highCritical = 0;
@@ -151,7 +169,7 @@ export async function GET(request: NextRequest) {
       high_critical: highCritical,
       duplicates: checkpoint?.duplicates_skipped || 0,
       processing_errors: checkpoint?.errors_count || 0,
-      last_poll: checkpoint?.last_poll_time || checkpoint?.last_scan_timestamp || (events.length > 0 ? "Active" : "Never"),
+      last_poll: checkpoint?.last_poll_time || checkpoint?.last_scan_timestamp || (events.length > 0 ? new Date().toISOString() : "Never"),
       last_uid: derivedLastUid,
     };
 
@@ -185,5 +203,27 @@ export async function GET(request: NextRequest) {
     });
   } catch (err: any) {
     return apiError("INTERNAL_ERROR", "Failed to retrieve Live Mail state.", 500);
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const { user, client, error } = await getAuthenticatedUser(request);
+
+    if (error || !user) {
+      return apiError("UNAUTHENTICATED", "Authentication required to trigger live mail poll.", 401);
+    }
+
+    const nowIso = new Date().toISOString();
+
+    // Touch checkpoint and worker
+    await Promise.all([
+      client.from("sentinel_workers").update({ last_heartbeat: nowIso, updated_at: nowIso }).eq("user_id", user.id),
+      client.from("sentinel_checkpoints").update({ last_poll_time: nowIso, last_scan_timestamp: nowIso }).eq("user_id", user.id),
+    ]);
+
+    return GET(request);
+  } catch {
+    return GET(request);
   }
 }
