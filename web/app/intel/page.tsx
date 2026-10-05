@@ -12,6 +12,7 @@ import { SkeletonCard } from "@/components/ui/Skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/States";
 import { EvidenceBlock } from "@/components/ui/EvidenceBlock";
 import { Header } from "@/components/Header";
+import { GeoIPMapDynamic } from "@/components/ui/GeoIPMapDynamic";
 import { Globe, Search, Lock, MapPin, Server, Shield, Network } from "lucide-react";
 
 const INDICATOR_TYPES = [
@@ -132,11 +133,12 @@ export default function IntelPage() {
               {result.geoip && (
                 <Card surface={2}>
                   <CardHeader title="Geolocation (Network Infrastructure)" subtitle="Autonomous System & GeoIP" />
-                  <div className="space-y-2 text-sm">
+                  <div className="space-y-3 text-sm">
                     <div className="flex items-center gap-2">
                       <MapPin className="h-4 w-4 text-slate-500" />
                       <span className="text-slate-300">
                         {result.geoip.city ? `${result.geoip.city}, ` : ""}
+                        {result.geoip.region ? `${result.geoip.region}, ` : ""}
                         {result.geoip.country}
                       </span>
                     </div>
@@ -144,9 +146,34 @@ export default function IntelPage() {
                       <Server className="h-4 w-4 text-slate-500" />
                       <span className="text-slate-300 font-mono text-xs">{result.geoip.isp}</span>
                     </div>
-                    <p className="text-xs text-slate-500 font-mono">
-                      Coordinates: {result.geoip.lat}, {result.geoip.lon}
-                    </p>
+                    {result.geoip.asn && (
+                      <div className="flex items-center gap-2">
+                        <Network className="h-4 w-4 text-slate-500" />
+                        <span className="text-slate-300 font-mono text-xs">{result.geoip.asn}</span>
+                      </div>
+                    )}
+                    {result.geoip.lat != null && result.geoip.lon != null ? (
+                      <div className="mt-2">
+                        <GeoIPMapDynamic
+                          markers={[
+                            {
+                              lat: result.geoip.lat,
+                              lon: result.geoip.lon,
+                              label: "Queried IP",
+                              ip: result.indicator,
+                              role: "origin" as const,
+                              details: `${result.geoip.city || "Unknown"}, ${result.geoip.country} — ${result.geoip.isp}`,
+                            },
+                          ]}
+                          zoom={5}
+                          height="300px"
+                        />
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 font-mono italic">
+                        Coordinates: NOT AVAILABLE — No map marker was fabricated.
+                      </p>
+                    )}
                   </div>
                 </Card>
               )}

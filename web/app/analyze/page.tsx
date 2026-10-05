@@ -18,6 +18,8 @@ import { EmptyState, ErrorState } from "@/components/ui/States";
 import { useToast } from "@/components/ui/Toast";
 import { Header } from "@/components/Header";
 import { formatDate } from "@/lib/constants";
+import { GeoIPMapDynamic } from "@/components/ui/GeoIPMapDynamic";
+import type { GeoIPMapMarker } from "@/components/ui/GeoIPMap";
 import {
   Upload,
   Radio,
@@ -759,6 +761,34 @@ export default function AnalyzeEmailPage() {
                         </div>
                       </div>
 
+                      {/* 🗺️ Approximate Infrastructure GeoIP Map */}
+                      {infra?.latitude != null && infra?.longitude != null && (
+                        <div className="space-y-2">
+                          <h4 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                            🗺️ Approximate Infrastructure Mapping
+                          </h4>
+                          <GeoIPMapDynamic
+                            markers={[
+                              {
+                                lat: infra.latitude,
+                                lon: infra.longitude,
+                                label: "Originating IP",
+                                ip: infra.origin_ip || "Unknown",
+                                role: "origin" as const,
+                                details: `${infra.city || "Unknown"}, ${infra.region || ""} ${infra.country || "Unknown"} — ${infra.asn || ""}`,
+                              },
+                            ]}
+                            zoom={4}
+                            height="380px"
+                          />
+                          {infra.accuracy_radius_km != null && (
+                            <p className="text-[0.625rem] text-slate-500 italic">
+                              Accuracy Radius: ~{infra.accuracy_radius_km} km (network-level approximation)
+                            </p>
+                          )}
+                        </div>
+                      )}
+
                       <div className="p-3.5 rounded-lg bg-soc-surface border border-soc-border space-y-2">
                         <h4 className="text-xs font-semibold text-slate-300">
                           Forensic Attribution & GeoIP Notice
@@ -1149,6 +1179,33 @@ export default function AnalyzeEmailPage() {
                         title={`Hop-by-Hop MTA Relay Flight Path (${hops.length} Hops Traced)`}
                         subtitle="Sequential mail transfer agent delays and IP relay chain"
                       />
+
+                      {/* ✈️ Relay Flight Path Map */}
+                      {(() => {
+                        const hopMarkers: GeoIPMapMarker[] = hops
+                          .filter((h: any) => h.latitude != null && h.longitude != null)
+                          .map((h: any, i: number, arr: any[]) => ({
+                            lat: h.latitude as number,
+                            lon: h.longitude as number,
+                            label: i === 0 ? "Origin MTA" : i === arr.length - 1 ? "Destination Gateway" : `Relay Hop #${h.hop}`,
+                            ip: h.ip || "Unknown",
+                            role: (i === 0 ? "origin" : i === arr.length - 1 ? "destination" : "relay") as "origin" | "relay" | "destination",
+                            details: `Hop #${h.hop} — ${h.from_mta || "Unknown"} → ${h.by_mta || "Unknown"}`,
+                          }));
+                        return hopMarkers.length >= 2 ? (
+                          <div className="space-y-2 mb-4">
+                            <h4 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                              ✈️ Hop-by-Hop Relay Flight Path Map
+                            </h4>
+                            <GeoIPMapDynamic
+                              markers={hopMarkers}
+                              zoom={3}
+                              height="350px"
+                              showFlightPath={true}
+                            />
+                          </div>
+                        ) : null;
+                      })()}
 
                       {hops.length === 0 ? (
                         <p className="text-xs text-slate-500 py-2">No relay transit headers available.</p>

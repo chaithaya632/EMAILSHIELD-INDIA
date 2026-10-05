@@ -91,6 +91,9 @@ export interface EmailDetail {
     open_relay_indicator: string;
     botnet_indicator: string;
     threat_feed_match: string;
+    latitude?: number | null;
+    longitude?: number | null;
+    accuracy_radius_km?: number | null;
   };
   domain_reputation?: {
     domain: string;
@@ -225,7 +228,7 @@ export interface IntelResult {
   indicator: string;
   type: 'ip' | 'domain' | 'url' | 'hash' | 'email';
   reputation?: string;
-  geoip?: { country: string; city: string; lat: number; lon: number; isp: string };
+  geoip?: { country: string; city: string; region?: string; lat: number | null; lon: number | null; isp: string; asn?: string; accuracy_radius_km?: number | null; is_identified?: boolean };
   rdap?: { registrar: string; created: string; expires: string; status: string[] };
   dns?: { type: string; value: string }[];
   authentication?: { spf: string; dkim: string; dmarc: string };

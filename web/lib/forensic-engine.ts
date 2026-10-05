@@ -17,6 +17,7 @@
  */
 
 import crypto from "crypto";
+import { resolveGeoIP, isPublicIP } from "@/lib/geoip";
 
 export interface ForensicResult {
   uid: string;
@@ -73,6 +74,9 @@ export interface ForensicResult {
     open_relay_indicator: "INDICATED" | "NOT_INDICATED" | "UNKNOWN";
     botnet_indicator: "INDICATED" | "NOT_INDICATED" | "UNKNOWN";
     threat_feed_match: "MATCH" | "NO_MATCH";
+    latitude: number | null;
+    longitude: number | null;
+    accuracy_radius_km: number | null;
   };
 
   // 4. Domain Reputation & ICANN Intelligence
@@ -138,6 +142,8 @@ export interface ForensicResult {
     ip: string;
     timestamp: string;
     delay_seconds: number;
+    latitude?: number | null;
+    longitude?: number | null;
   }>;
 
   // 11. Timeline Events
@@ -202,10 +208,10 @@ export function isPrivateIp(ip: string): boolean {
 /**
  * Main forensic inspection engine.
  */
-export function analyzeEmailForensics(
+export async function analyzeEmailForensics(
   rawContent: string,
   options?: { caseId?: string; uid?: string; sourceMode?: string }
-): ForensicResult {
+): Promise<ForensicResult> {
   const content = rawContent || "";
   const sha256 = crypto.createHash("sha256").update(content).digest("hex");
   const caseId = options?.caseId || `CASE-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
@@ -387,7 +393,7 @@ export function analyzeEmailForensics(
     }
   }
 
-  // Geolocation & Infrastructure Telemetry Heuristics
+  // Geolocation & Infrastructure Telemetry — Real GeoIP Resolution
   let flag = "🌐";
   let country = "Unknown";
   let city = "Unknown";
@@ -395,46 +401,58 @@ export function analyzeEmailForensics(
   let asn = "AS-UNKNOWN";
   let isp = "Authorized Internet Routing";
   let cloudProvider = "Dedicated / Non-Cloud";
-  let isVpn: "DETECTED" | "NOT_DETECTED" | "UNKNOWN" = "NOT_DETECTED";
-  let isTor: "DETECTED" | "NOT_DETECTED" | "UNKNOWN" = "NOT_DETECTED";
-  let isOpenRelay: "INDICATED" | "NOT_INDICATED" | "UNKNOWN" = "NOT_INDICATED";
-  let isBotnet: "INDICATED" | "NOT_INDICATED" | "UNKNOWN" = "NOT_INDICATED";
-  let threatFeedMatch: "MATCH" | "NO_MATCH" = "NO_MATCH";
+  let isVpn = "NOT_DETECTED" as "DETECTED" | "NOT_DETECTED" | "UNKNOWN";
+  let isTor = "NOT_DETECTED" as "DETECTED" | "NOT_DETECTED" | "UNKNOWN";
+  let isOpenRelay = "NOT_INDICATED" as "INDICATED" | "NOT_INDICATED" | "UNKNOWN";
+  let isBotnet = "NOT_INDICATED" as "INDICATED" | "NOT_INDICATED" | "UNKNOWN";
+  let threatFeedMatch = "NO_MATCH" as "MATCH" | "NO_MATCH";
+  let latitude: number | null = null;
+  let longitude: number | null = null;
+  let accuracyRadiusKm: number | null = null;
 
-  if (originIp !== "Unavailable") {
-    if (originIp.startsWith("209.85.") || originIp.startsWith("172.217.") || originIp.startsWith("142.250.")) {
-      flag = "🇺🇸";
-      country = "United States";
-      city = "Mountain View";
-      region = "California";
-      asn = "AS15169 (Google LLC)";
-      isp = "Google Cloud Platform / Infrastructure";
-      cloudProvider = "Google Cloud";
-    } else if (originIp.startsWith("52.") || originIp.startsWith("54.") || originIp.startsWith("3.") || originIp.startsWith("13.")) {
-      flag = "🇺🇸";
-      country = "United States";
-      city = "Ashburn";
-      region = "Virginia";
-      asn = "AS16509 (Amazon.com)";
-      isp = "Amazon Web Services (AWS)";
-      cloudProvider = "Amazon Web Services";
-    } else if (originIp.startsWith("103.") || originIp.startsWith("104.211.") || originIp.startsWith("182.")) {
-      flag = "🇮🇳";
-      country = "India";
-      city = "Mumbai";
-      region = "Maharashtra";
-      asn = "AS55836 (Reliance Jio / Bharti Airtel)";
-      isp = "National Internet Backbone / Telecom";
-    } else if (originIp.startsWith("185.") || originIp.startsWith("194.") || originIp.startsWith("45.")) {
-      flag = "🇷🇺";
-      country = "Russian Federation";
-      city = "Moscow";
-      region = "Moscow";
-      asn = "AS48282 (HostRoyale / Bulletproof Network)";
-      isp = "Bulletproof Hosting Services";
-      isVpn = "DETECTED";
-      threatFeedMatch = "MATCH";
+  if (originIp !== "Unavailable" && isPublicIP(originIp)) {
+    try {
+      const geo = await resolveGeoIP(originIp);
+      if (geo.is_identified) {
+        flag = geo.flag;
+        country = geo.country;
+        city = geo.city;
+        region = geo.region;
+        asn = geo.asn;
+        isp = geo.isp;
+        latitude = geo.latitude;
+        longitude = geo.longitude;
+        accuracyRadiusKm = geo.accuracy_radius_km;
+
+        // Cloud provider detection from network type
+        if (geo.network_type === "Cloud / Hosting") {
+          cloudProvider = geo.org || geo.isp;
+        }
+      }
+    } catch {
+      // GeoIP resolution failed — continue with defaults (no fabricated data)
     }
+  }
+
+  // Resolve GeoIP for relay hops (for flight path map)
+  const resolvedHops: Array<{ hop: number; from_mta: string; by_mta: string; ip: string; timestamp: string; delay_seconds: number; latitude?: number | null; longitude?: number | null }> = [];
+  let geoipCalls = 0;
+  for (const h of hopTransit) {
+    let lat = null;
+    let lon = null;
+    if (h.ip && h.ip !== "Internal/Relay" && isPublicIP(h.ip) && geoipCalls < 5) {
+      try {
+        const geo = await resolveGeoIP(h.ip);
+        if (geo.is_identified) {
+          lat = geo.latitude;
+          lon = geo.longitude;
+        }
+        geoipCalls++;
+      } catch {
+        // ignore
+      }
+    }
+    resolvedHops.push({ ...h, latitude: lat, longitude: lon });
   }
 
   // Domain Reputation & ICANN Registration Age
@@ -770,6 +788,9 @@ export function analyzeEmailForensics(
       open_relay_indicator: isOpenRelay,
       botnet_indicator: isBotnet,
       threat_feed_match: threatFeedMatch,
+      latitude,
+      longitude,
+      accuracy_radius_km: accuracyRadiusKm,
     },
     domain_reputation: {
       domain: senderDomain || "unknown",
@@ -783,7 +804,7 @@ export function analyzeEmailForensics(
     indian_financial: indianFinancial,
     attachments,
     findings,
-    hop_transit: hopTransit,
+    hop_transit: resolvedHops,
     timeline,
   };
 }

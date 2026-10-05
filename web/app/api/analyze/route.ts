@@ -149,7 +149,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Execute complete forensic analysis matching EMAILSHIELD architecture
-    const forensic = analyzeEmailForensics(emailRaw, {
+    const forensic = await analyzeEmailForensics(emailRaw, {
       uid: liveMessageUid || undefined,
       sourceMode,
     });
